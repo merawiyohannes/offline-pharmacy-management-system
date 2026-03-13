@@ -35,6 +35,9 @@ class PharmacyApp:
         # Create menu bar
         self.create_menu()
         
+        # Create status bar
+        self.create_status_bar()
+        
         # Create main content area with notebook
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
@@ -45,8 +48,6 @@ class PharmacyApp:
         self.create_reports_tab()
         self.create_dashboard_tab()
         
-        # Create status bar
-        self.create_status_bar()
         # Load initial data
         self.load_medicines()
         self.check_alerts()
@@ -385,16 +386,25 @@ class PharmacyApp:
         style.configure('Treeview', font=('Segoe UI', 9), rowheight=25)
     
     def create_status_bar(self):
-        """Create status bar"""
-        status_frame = tk.Frame(self.root, bg='#34495e', height=28)
+        """Create status bar - visible on all pages"""
+        status_frame = tk.Frame(self.root, bg='#34495e', height=30)
         status_frame.pack(side='bottom', fill='x')
         status_frame.pack_propagate(False)
         
-        info_text = f"📅 {datetime.now().strftime('%Y-%m-%d')}   |   Merawi Yohannes   |   0921-540-245   |   0960-633-549   |   Support 24/7"
+        # Left side - Date & Version
+        left_text = f"📅 {datetime.now().strftime('%Y-%m-%d')}  |  v1.0"
+        tk.Label(status_frame, text=left_text, bg='#34495e', fg='#bdc3c7',
+                font=('Segoe UI', 9)).pack(side='left', padx=15, pady=5)
         
-        info_label = tk.Label(status_frame, text=info_text, bg='#34495e', fg='#bdc3c7',
-                             font=('Segoe UI', 9), padx=10)
-        info_label.pack(side='left', fill='x', expand=True)
+        # Center - Developer Info
+        center_text = "👨‍💻 Merawi Yohannes  |  📱 0921-540-245  |  📱 0960-633-549"
+        tk.Label(status_frame, text=center_text, bg='#34495e', fg='white',
+                font=('Segoe UI', 9, 'bold')).pack(side='left', padx=20, pady=5)
+        
+        # Right side - Location & Support
+        right_text = "📍 Addis Ababa, Ethiopia  |  ⚕️ Support 24/7"
+        tk.Label(status_frame, text=right_text, bg='#34495e', fg='#bdc3c7',
+                font=('Segoe UI', 9)).pack(side='right', padx=15, pady=5)
     
     def create_menu(self):
         """Create menu bar"""
