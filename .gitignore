@@ -1,0 +1,103 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.spec
+*.exe
+*.manifest
+*.exe.manifest
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Databases
+*.db
+*.db-journal
+*.sqlite3
+*.sqlite3-journal
+
+# Backups
+backups/
+receipts/
+exports/
+*.bak
+*.backup
+
+# Logs
+logs/
+*.log
+
+# Local environment files
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Project specific
+*.key
+*.ico
+*.icns
+*.exe
+*.dmg
+*.pkg
+*.msi
+
+# License file (keep this if you want to include it in repo, but usually not)
+# license.key
+
+# Data directory (don't commit user data)
+MERawiPharmacy/
+AppData/
+Local/
