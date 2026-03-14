@@ -436,339 +436,616 @@ class PharmacyApp:
     # ========== DASHBOARD TAB ==========
     
     def create_dashboard_tab(self):
-        """Create professional dashboard with essential KPIs and charts"""
+        """Create dashboard with critical visual graphs - FULL WIDTH, ALL LABELS VISIBLE"""
         self.dashboard_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.dashboard_frame, text="📊 Dashboard")
         
-        # Get comprehensive data
+        # ========== GET ALL DATA ==========
         conn = sqlite3.connect(self.get_database_path())
         cursor = conn.cursor()
         
-        # ========== ESSENTIAL KPI DATA ==========
-        
-        # 1. Inventory Value (Most Important)
-        cursor.execute('SELECT SUM(quantity * selling_price) FROM medicines')
-        total_inventory_value = cursor.fetchone()[0] or 0
-        
-        # 2. Total Cost (What you paid)
+        # Financial data
         cursor.execute('SELECT SUM(quantity * purchase_price) FROM medicines')
         total_cost = cursor.fetchone()[0] or 0
         
-        # 3. Potential Profit
-        potential_profit = total_inventory_value - total_cost
-        profit_margin = (potential_profit / total_inventory_value * 100) if total_inventory_value > 0 else 0
+        cursor.execute('SELECT SUM(quantity * selling_price) FROM medicines')
+        total_revenue_potential = cursor.fetchone()[0] or 0
         
-        # 4. Today's Sales
+        potential_profit = total_revenue_potential - total_cost
+        profit_margin = (potential_profit / total_revenue_potential * 100) if total_revenue_potential > 0 else 0
+        
+        # Today's sales
         today = datetime.now().strftime('%Y-%m-%d')
         cursor.execute('SELECT SUM(total_price), COUNT(*) FROM sales WHERE sale_date LIKE ?', (f'{today}%',))
         today_data = cursor.fetchone()
         today_revenue = today_data[0] or 0
         today_transactions = today_data[1] or 0
         
-        # 5. Total Products
+        # All-time sales
+        cursor.execute('SELECT SUM(total_price) FROM sales')
+        total_revenue = cursor.fetchone()[0] or 0
+        
+        cursor.execute('SELECT COUNT(*) FROM sales')
+        total_transactions = cursor.fetchone()[0] or 0
+        
+        # Counts
         cursor.execute('SELECT COUNT(*) FROM medicines')
         total_products = cursor.fetchone()[0]
         
-        # 6. Total Units in Stock
         cursor.execute('SELECT SUM(quantity) FROM medicines')
         total_units = cursor.fetchone()[0] or 0
         
-        # 7. Low Stock Count
+        # Low stock count
         cursor.execute('SELECT COUNT(*) FROM medicines WHERE quantity <= min_stock')
-        low_stock = cursor.fetchone()[0]
+        low_stock_count = cursor.fetchone()[0]
         
-        # 8. Expiring Soon Count & Value
+        # ========== EXPIRY ANALYSIS ==========
         today_date = datetime.now().date()
-        cursor.execute('SELECT expiry_date, quantity, selling_price FROM medicines')
-        expiring_count = 0
-        expiring_value = 0
-        expiring_units = 0
+        cursor.execute('SELECT expiry_date, quantity, min_stock, selling_price FROM medicines')
+        all_meds = cursor.fetchall()
         
-        for exp, qty, price in cursor.fetchall():
+        # Status counts
+        healthy = {'count': 0, 'units': 0, 'value': 0}
+        low_stock = {'count': 0, 'units': 0, 'value': 0}
+        expiring = {'count': 0, 'units': 0, 'value': 0}
+        expired = {'count': 0, 'units': 0, 'value': 0, 'loss': 0}
+        
+        # Monthly expiry distribution (FULL YEAR)
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        monthly_expiry = {month: 0 for month in months}
+        
+        # Expiry value by month
+        monthly_expiry_value = {month: 0 for month in months}
+        
+        for exp, qty, min_stk, price in all_meds:
+            item_value = qty * price
+            is_expired = False
+            is_expiring = False
+            
             if exp and len(exp) == 10:
                 try:
                     expiry = datetime.strptime(exp, '%Y-%m-%d').date()
                     days = (expiry - today_date).days
-                    if 0 <= days <= 30:
-                        expiring_count += 1
-                        expiring_units += qty
-                        expiring_value += qty * price
+                    month_name = expiry.strftime('%b')
+                    
+                    if month_name in monthly_expiry:
+                        monthly_expiry[month_name] += qty
+                        monthly_expiry_value[month_name] += item_value
+                    
+                    if days < 0:
+                        expired['count'] += 1
+                        expired['units'] += qty
+                        expired['value'] += item_value
+                        is_expired = True
+                    elif days <= 30:
+                        expiring['count'] += 1
+                        expiring['units'] += qty
+                        expiring['value'] += item_value
+                        is_expiring = True
                 except:
                     pass
+            
+            if not is_expired and not is_expiring:
+                if qty <= min_stk:
+                    low_stock['count'] += 1
+                    low_stock['units'] += qty
+                    low_stock['value'] += item_value
+                else:
+                    healthy['count'] += 1
+                    healthy['units'] += qty
+                    healthy['value'] += item_value
         
-        # 9. Expired Loss
-        cursor.execute('SELECT expiry_date, quantity, purchase_price FROM medicines')
-        expired_loss = 0
-        expired_count = 0
-        
-        for exp, qty, cost in cursor.fetchall():
-            if exp and len(exp) == 10:
-                try:
-                    expiry = datetime.strptime(exp, '%Y-%m-%d').date()
-                    if expiry < today_date:
-                        expired_count += 1
-                        expired_loss += qty * cost
-                except:
-                    pass
-        
-        # 10. All-Time Sales
-        cursor.execute('SELECT SUM(total_price), COUNT(*) FROM sales')
-        all_sales = cursor.fetchone()
-        total_revenue = all_sales[0] or 0
-        total_transactions = all_sales[1] or 0
-        
-        # 11. Inventory Turnover Rate
-        turnover_rate = (total_revenue / total_inventory_value) if total_inventory_value > 0 else 0
-        
-        # 12. Days of Inventory
-        avg_daily_sales = total_revenue / 30 if total_revenue > 0 else 1
-        days_of_inventory = total_inventory_value / avg_daily_sales if avg_daily_sales > 0 else 0
-        
-        # Category data for pie chart
+        # ========== CATEGORY DATA ==========
         cursor.execute('''
             SELECT category, COUNT(*) as count, SUM(quantity) as total_qty 
             FROM medicines 
             WHERE category IS NOT NULL AND category != ''
             GROUP BY category 
             ORDER BY count DESC 
-            LIMIT 5
         ''')
         categories = cursor.fetchall()
         
-        # Expiry data for bar chart
-        cursor.execute('SELECT expiry_date, quantity FROM medicines')
-        expiry_status = {'Healthy': 0, 'Expiring Soon': 0, 'Expired': 0}
+        # ========== TOP SELLERS ==========
+        cursor.execute('''
+            SELECT medicine_name, SUM(quantity) as total_sold, SUM(total_price) as revenue
+            FROM sales 
+            GROUP BY medicine_name 
+            ORDER BY total_sold DESC 
+            LIMIT 5
+        ''')
+        top_sellers = cursor.fetchall()
         
-        for exp, qty in cursor.fetchall():
-            if exp and len(exp) == 10:
-                try:
-                    expiry = datetime.strptime(exp, '%Y-%m-%d').date()
-                    days = (expiry - today_date).days
-                    if days < 0:
-                        expiry_status['Expired'] += qty
-                    elif days <= 30:
-                        expiry_status['Expiring Soon'] += qty
-                    else:
-                        expiry_status['Healthy'] += qty
-                except:
-                    expiry_status['Healthy'] += qty
+        # ========== MONTHLY SALES TREND (12 MONTHS) ==========
+        monthly_sales = {}
+        monthly_transactions = {}
+        
+        # Initialize last 12 months
+        for i in range(11, -1, -1):
+            month_date = today_date - timedelta(days=30*i)
+            month_key = month_date.strftime('%b %Y')
+            monthly_sales[month_key] = 0
+            monthly_transactions[month_key] = 0
+        
+        cursor.execute('''
+            SELECT strftime('%Y-%m', sale_date) as month, 
+                SUM(total_price) as total,
+                COUNT(*) as trans
+            FROM sales 
+            GROUP BY month 
+            ORDER BY month DESC 
+            LIMIT 12
+        ''')
+        for month, amount, trans in cursor.fetchall():
+            month_name = datetime.strptime(month + '-01', '%Y-%m-%d').strftime('%b %Y')
+            monthly_sales[month_name] = amount or 0
+            monthly_transactions[month_name] = trans or 0
+        
+        # ========== TOP MANUFACTURERS ==========
+        cursor.execute('''
+            SELECT manufacturer, COUNT(*) as count 
+            FROM medicines 
+            WHERE manufacturer IS NOT NULL AND manufacturer != ''
+            GROUP BY manufacturer 
+            ORDER BY count DESC 
+            LIMIT 5
+        ''')
+        top_manufacturers = cursor.fetchall()
+        
+        # ========== PRICE RANGE DISTRIBUTION ==========
+        price_ranges = {'0-50': 0, '51-100': 0, '101-200': 0, '201-500': 0, '500+': 0}
+        cursor.execute('SELECT selling_price, quantity FROM medicines')
+        for price, qty in cursor.fetchall():
+            if price <= 50:
+                price_ranges['0-50'] += qty
+            elif price <= 100:
+                price_ranges['51-100'] += qty
+            elif price <= 200:
+                price_ranges['101-200'] += qty
+            elif price <= 500:
+                price_ranges['201-500'] += qty
             else:
-                expiry_status['Healthy'] += qty
+                price_ranges['500+'] += qty
+        
+        # ========== WEEKDAY SALES PATTERN ==========
+        weekdays = {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0}
+        cursor.execute('SELECT sale_date, total_price FROM sales')
+        for date_str, amount in cursor.fetchall():
+            if date_str and len(date_str) >= 10:
+                try:
+                    sale_date = datetime.strptime(date_str[:10], '%Y-%m-%d').date()
+                    weekday = sale_date.strftime('%a')
+                    if weekday in weekdays:
+                        weekdays[weekday] += amount
+                except:
+                    pass
         
         conn.close()
         
-        # ========== DASHBOARD UI ==========
-        
-        # Header with refresh button
-        header_frame = tk.Frame(self.dashboard_frame, bg='white', padx=20, pady=10)
+        # ========== HEADER ==========
+        header_frame = tk.Frame(self.dashboard_frame, bg='white', padx=25, pady=15)
         header_frame.pack(fill='x')
         
-        tk.Label(header_frame, text="📊 BUSINESS INTELLIGENCE DASHBOARD", 
-                bg='white', fg='#2c3e50', font=('Segoe UI', 16, 'bold')).pack(side='left')
+        title_frame = tk.Frame(header_frame, bg='white')
+        title_frame.pack(side='left')
         
-        # Refresh button (NOW VISIBLE)
-        refresh_btn = tk.Button(header_frame, text="🔄 Refresh", bg='#3498db', fg='white',
-                            font=('Segoe UI', 10, 'bold'), padx=15, pady=5,
+        tk.Label(title_frame, text="📊 MERawi PHARMACY PRO", 
+                bg='white', fg='#2c3e50', font=('Segoe UI', 18, 'bold')).pack(anchor='w')
+        tk.Label(title_frame, text="Business Intelligence Dashboard - Complete Pharmacy Analytics", 
+                bg='white', fg='#7f8c8d', font=('Segoe UI', 10)).pack(anchor='w')
+        
+        refresh_btn = tk.Button(header_frame, text="🔄 Refresh Data", bg='#3498db', fg='white',
+                            font=('Segoe UI', 10, 'bold'), padx=20, pady=8,
                             relief='flat', command=self.refresh_dashboard)
         refresh_btn.pack(side='right')
         
-        # Hover effect
-        def on_enter(e): refresh_btn['background'] = '#2980b9'
-        def on_leave(e): refresh_btn['background'] = '#3498db'
-        refresh_btn.bind('<Enter>', on_enter)
-        refresh_btn.bind('<Leave>', on_leave)
+        tk.Label(header_frame, text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                bg='white', fg='#95a5a6', font=('Segoe UI', 9)).pack(anchor='w', pady=(5,0))
         
-        tk.Label(header_frame, text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                bg='white', fg='#7f8c8d', font=('Segoe UI', 9)).pack(anchor='w')
+        # ========== SCROLLABLE AREA (FULL WIDTH) ==========
+        canvas = tk.Canvas(self.dashboard_frame, bg='#f5f5f5', highlightthickness=0)
+        scrollbar = tk.Scrollbar(self.dashboard_frame, orient='vertical', command=canvas.yview)
+        scrollable = tk.Frame(canvas, bg='#f5f5f5')
         
-        # ========== TOP KPI CARDS (ESSENTIAL METRICS) ==========
-        cards_frame = tk.Frame(self.dashboard_frame, bg='#f8f9fa', padx=15, pady=15)
-        cards_frame.pack(fill='x')
+        scrollable.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=scrollable, anchor='nw', width=canvas.winfo_width())
         
-        # Row 1: Financial KPIs
-        row1 = tk.Frame(cards_frame, bg='#f8f9fa')
-        row1.pack(fill='x', pady=2)
+        def configure_width(e):
+            canvas.itemconfig(1, width=e.width)
+        canvas.bind('<Configure>', configure_width)
         
-        # Card: Inventory Value
-        card1 = tk.Frame(row1, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card1.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card1, text="💰 INVENTORY VALUE", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card1, text=f"{total_inventory_value:,.0f}", bg='white', fg='#27ae60',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card1, text="Birr", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        canvas.configure(yscrollcommand=scrollbar.set)
         
-        # Card: Potential Profit
-        card2 = tk.Frame(row1, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card2.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card2, text="📈 POTENTIAL PROFIT", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card2, text=f"{potential_profit:,.0f}", bg='white', fg='#f39c12',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card2, text=f"Margin: {profit_margin:.1f}%", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        def wheel(e): canvas.yview_scroll(int(-1*(e.delta/120)), 'units')
+        scrollable.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>', wheel))
+        scrollable.bind('<Leave>', lambda e: canvas.unbind_all('<MouseWheel>'))
         
-        # Card: Today's Sales
-        card3 = tk.Frame(row1, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card3.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card3, text="📊 TODAY'S SALES", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card3, text=f"{today_revenue:,.0f}", bg='white', fg='#3498db',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card3, text=f"{today_transactions} transactions", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
         
-        # Row 2: Operational KPIs
-        row2 = tk.Frame(cards_frame, bg='#f8f9fa')
-        row2.pack(fill='x', pady=2)
+        # ========== MAIN CONTENT (FULL WIDTH) ==========
+        main = tk.Frame(scrollable, bg='#f5f5f5', padx=25, pady=25)
+        main.pack(fill='both', expand=True)
         
-        # Card: Total Products
-        card4 = tk.Frame(row2, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card4.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card4, text="💊 TOTAL PRODUCTS", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card4, text=f"{total_products}", bg='white', fg='#2c3e50',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card4, text=f"{int(total_units):,} units", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        # ========== KPI CARDS ROW 1 ==========
+        kpi_frame = tk.Frame(main, bg='#f5f5f5')
+        kpi_frame.pack(fill='x', pady=5)
         
-        # Card: Low Stock Alert
-        card5 = tk.Frame(row2, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card5.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card5, text="⚠️ LOW STOCK", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card5, text=f"{low_stock}", bg='white', fg='#e67e22',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card5, text="items need reorder", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        cards = [
+            ("💰 TOTAL INVESTMENT", f"{total_cost:,.0f} Birr", "What you paid", '#e74c3c'),
+            ("📈 POTENTIAL REVENUE", f"{total_revenue_potential:,.0f} Birr", "Customer value", '#2ecc71'),
+            ("💵 POTENTIAL PROFIT", f"{potential_profit:,.0f} Birr", f"Margin: {profit_margin:.1f}%", '#3498db'),
+            ("📊 TODAY'S SALES", f"{today_revenue:,.0f} Birr", f"{today_transactions} transactions", '#f39c12')
+        ]
         
-        # Card: Expiring Soon
-        card6 = tk.Frame(row2, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card6.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card6, text="⏰ EXPIRING SOON", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card6, text=f"{expiring_count}", bg='white', fg='#e74c3c',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card6, text=f"{expiring_value:,.0f} Birr at risk", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        for title, value, sub, color in cards:
+            card = tk.Frame(kpi_frame, bg='white', padx=15, pady=12, relief='ridge', bd=1)
+            card.pack(side='left', expand=True, fill='both', padx=3)
+            tk.Label(card, text=title, bg='white', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
+            tk.Label(card, text=value, bg='white', fg=color, font=('Segoe UI', 14, 'bold')).pack()
+            tk.Label(card, text=sub, bg='white', fg='#95a5a6', font=('Segoe UI', 8)).pack()
         
-        # Row 3: Performance KPIs
-        row3 = tk.Frame(cards_frame, bg='#f8f9fa')
-        row3.pack(fill='x', pady=2)
+        # ========== KPI CARDS ROW 2 ==========
+        kpi2_frame = tk.Frame(main, bg='#f5f5f5')
+        kpi2_frame.pack(fill='x', pady=5)
         
-        # Card: Turnover Rate
-        card7 = tk.Frame(row3, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card7.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card7, text="🔄 TURNOVER RATE", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        turnover_color = '#2ecc71' if turnover_rate >= 4 else '#f39c12' if turnover_rate >= 2 else '#e74c3c'
-        tk.Label(card7, text=f"{turnover_rate:.2f}x", bg='white', fg=turnover_color,
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card7, text="Industry avg: 4-6x", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        cards2 = [
+            ("💊 TOTAL PRODUCTS", f"{total_products}", f"{int(total_units):,} units", '#2c3e50'),
+            ("⚠️ LOW STOCK", f"{low_stock['count']}", f"{low_stock['units']} units", '#e67e22'),
+            ("⏰ EXPIRING SOON", f"{expiring['count']}", f"{expiring['units']} units (30 days)", '#e74c3c'),
+            ("❌ EXPIRED", f"{expired['count']}", f"{expired['units']} units", '#c0392b'),
+            ("✅ HEALTHY", f"{healthy['count']}", f"{healthy['units']} units", '#27ae60')
+        ]
         
-        # Card: Days of Inventory
-        card8 = tk.Frame(row3, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card8.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card8, text="📅 DAYS OF INVENTORY", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        days_color = '#e74c3c' if days_of_inventory > 60 else '#f39c12' if days_of_inventory > 30 else '#2ecc71'
-        tk.Label(card8, text=f"{days_of_inventory:.0f}", bg='white', fg=days_color,
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card8, text="days until stockout", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        for title, value, sub, color in cards2:
+            card = tk.Frame(kpi2_frame, bg='white', padx=15, pady=12, relief='ridge', bd=1)
+            card.pack(side='left', expand=True, fill='both', padx=3)
+            tk.Label(card, text=title, bg='white', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
+            tk.Label(card, text=value, bg='white', fg=color, font=('Segoe UI', 14, 'bold')).pack()
+            tk.Label(card, text=sub, bg='white', fg='#95a5a6', font=('Segoe UI', 8)).pack()
         
-        # Card: Expired Loss
-        card9 = tk.Frame(row3, bg='white', padx=10, pady=10, relief='ridge', bd=1)
-        card9.pack(side='left', expand=True, fill='both', padx=2)
-        tk.Label(card9, text="❌ EXPIRED LOSS", bg='white', fg='#7f8c8d',
-                font=('Segoe UI', 8)).pack()
-        tk.Label(card9, text=f"{expired_loss:,.0f}", bg='white', fg='#c0392b',
-                font=('Segoe UI', 18, 'bold')).pack()
-        tk.Label(card9, text=f"{expired_count} items", bg='white', fg='#95a5a6',
-                font=('Segoe UI', 8)).pack()
+        # ========== GRAPH 1-2: FINANCIAL HEALTH + INVENTORY STATUS ==========
+        graph_row1 = tk.Frame(main, bg='#f5f5f5')
+        graph_row1.pack(fill='x', pady=10)
         
-        # ========== CHARTS SECTION ==========
-        charts_frame = tk.Frame(self.dashboard_frame, bg='white', padx=15, pady=15)
-        charts_frame.pack(fill='both', expand=True, pady=5)
+        # Graph 1: Financial Pie (LEFT)
+        frame1 = tk.LabelFrame(graph_row1, text="💰 Financial Health - Where Your Money Is", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame1.pack(side='left', fill='both', expand=True, padx=3)
         
-        # Create figure for charts
-        fig = Figure(figsize=(10, 4), dpi=100)
-        fig.patch.set_facecolor('white')
+        fig1 = Figure(figsize=(6, 4), dpi=100)
+        fig1.patch.set_facecolor('white')
+        ax1 = fig1.add_subplot(111)
         
-        # Category Pie Chart
-        ax1 = fig.add_subplot(121)
-        if categories:
-            cat_names = [c[0][:12] + '...' if len(c[0]) > 12 else c[0] for c in categories]
-            cat_counts = [c[1] for c in categories]
-            colors = plt.cm.Set3(np.linspace(0, 1, len(cat_names)))
-            
-            wedges, texts, autotexts = ax1.pie(cat_counts, labels=cat_names, autopct='%1.1f%%',
-                                            colors=colors, startangle=90)
-            
+        if total_cost > 0 or potential_profit > 0:
+            wedges, texts, autos = ax1.pie(
+                [total_cost, potential_profit], 
+                labels=[f'Cost: {total_cost:,.0f}', f'Profit: {potential_profit:,.0f}'], 
+                colors=['#e74c3c', '#2ecc71'],
+                autopct=lambda pct: f'{pct:.1f}%\n({pct*total_revenue_potential/100:,.0f})',
+                textprops={'fontsize': 9}
+            )
             for text in texts:
-                text.set_fontsize(8)
-            for autotext in autotexts:
-                autotext.set_color('white')
-                autotext.set_fontweight('bold')
-                autotext.set_fontsize(8)
-            
-            ax1.set_title('Top Categories by Product Count', fontsize=11, fontweight='bold', pad=10)
+                text.set_fontsize(9)
+            for auto in autos:
+                auto.set_fontsize(8)
+                auto.set_color('white')
+                auto.set_fontweight('bold')
         else:
-            ax1.text(0.5, 0.5, 'No Category Data', ha='center', va='center')
-            ax1.set_title('Categories', fontsize=11, fontweight='bold')
+            ax1.text(0.5, 0.5, 'No financial data', ha='center', va='center')
         
-        # Expiry Bar Chart
-        ax2 = fig.add_subplot(122)
-        status_names = list(expiry_status.keys())
-        status_values = list(expiry_status.values())
-        bar_colors = ['#2ecc71', '#f39c12', '#e74c3c']
+        ax1.set_title('Investment Breakdown\n(What you paid vs What you gain)', fontsize=10, fontweight='bold')
+        canvas1 = FigureCanvasTkAgg(fig1, frame1)
+        canvas1.draw()
+        canvas1.get_tk_widget().pack(fill='both', expand=True)
         
-        bars = ax2.bar(status_names, status_values, color=bar_colors, width=0.6)
-        ax2.set_title('Stock by Expiry Status', fontsize=11, fontweight='bold', pad=10)
-        ax2.set_ylabel('Units', fontsize=9)
+        # Graph 2: Inventory Status Pie (RIGHT)
+        frame2 = tk.LabelFrame(graph_row1, text="📦 Inventory Health - Stock Status", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame2.pack(side='right', fill='both', expand=True, padx=3)
         
-        # Add value labels
-        for bar in bars:
-            height = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2., height,
-                    f'{int(height):,}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+        fig2 = Figure(figsize=(6, 4), dpi=100)
+        fig2.patch.set_facecolor('white')
+        ax2 = fig2.add_subplot(111)
         
-        ax2.spines['top'].set_visible(False)
-        ax2.spines['right'].set_visible(False)
-        ax2.grid(axis='y', linestyle='--', alpha=0.3)
-        
-        plt.tight_layout()
-        
-        # Embed charts
-        canvas = FigureCanvasTkAgg(fig, charts_frame)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill='both', expand=True)
-        
-        # ========== ALERT SUMMARY ==========
-        alert_frame = tk.Frame(self.dashboard_frame, bg='#f8f9fa', padx=15, pady=10)
-        alert_frame.pack(fill='x', pady=5)
-        
-        if low_stock > 0 or expiring_count > 0 or expired_count > 0:
-            tk.Label(alert_frame, text="🔔 ACTION REQUIRED", bg='#f8f9fa', fg='#2c3e50',
-                    font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        if healthy['units'] + low_stock['units'] + expiring['units'] + expired['units'] > 0:
+            data = [healthy['units'], low_stock['units'], expiring['units'], expired['units']]
+            labels = [
+                f'Healthy: {healthy["units"]}', 
+                f'Low Stock: {low_stock["units"]}', 
+                f'Expiring: {expiring["units"]}', 
+                f'Expired: {expired["units"]}'
+            ]
+            colors = ['#2ecc71', '#f39c12', '#e67e22', '#e74c3c']
             
-            if low_stock > 0:
-                tk.Label(alert_frame, text=f"• ⚠️ {low_stock} products need reordering immediately",
-                        bg='#f8f9fa', fg='#e67e22', font=('Segoe UI', 9)).pack(anchor='w')
-            
-            if expiring_count > 0:
-                tk.Label(alert_frame, text=f"• ⏰ {expiring_count} products expiring soon ({expiring_value:,.0f} Birr at risk)",
-                        bg='#f8f9fa', fg='#e74c3c', font=('Segoe UI', 9)).pack(anchor='w')
-            
-            if expired_count > 0:
-                tk.Label(alert_frame, text=f"• ❌ {expired_count} products expired ({expired_loss:,.0f} Birr loss)",
-                        bg='#f8f9fa', fg='#c0392b', font=('Segoe UI', 9)).pack(anchor='w')
+            wedges, texts, autos = ax2.pie(
+                data, labels=labels, colors=colors,
+                autopct=lambda pct: f'{pct:.1f}%',
+                textprops={'fontsize': 9}
+            )
+            for text in texts:
+                text.set_fontsize(9)
+            for auto in autos:
+                auto.set_fontsize(8)
+                auto.set_color('white')
+                auto.set_fontweight('bold')
         else:
-            tk.Label(alert_frame, text="✅ All systems normal. No immediate action needed.",
-                    bg='#f8f9fa', fg='#27ae60', font=('Segoe UI', 10)).pack()
-    
+            ax2.text(0.5, 0.5, 'No inventory data', ha='center', va='center')
+        
+        ax2.set_title('Units by Status\n(Good ⚡ Low ⏰ Expiring ❌ Expired)', fontsize=10, fontweight='bold')
+        canvas2 = FigureCanvasTkAgg(fig2, frame2)
+        canvas2.draw()
+        canvas2.get_tk_widget().pack(fill='both', expand=True)
+        
+        # ========== GRAPH 3: EXPIRY WARNING BAR CHART (FULL WIDTH) ==========
+        frame3 = tk.LabelFrame(main, text="⏰ Expiry Calendar - Units Expiring Each Month", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame3.pack(fill='x', pady=10)
+        
+        fig3 = Figure(figsize=(12, 4), dpi=100)
+        fig3.patch.set_facecolor('white')
+        ax3 = fig3.add_subplot(111)
+        
+        month_list = list(monthly_expiry.keys())
+        values = list(monthly_expiry.values())
+        value_labels = [f'{v:,}' for v in values]
+        
+        if sum(values) > 0:
+            colors = ['#e74c3c' if i == datetime.now().month-1 else '#f39c12' if val > 0 else '#bdc3c7' 
+                    for i, val in enumerate(values)]
+            
+            bars = ax3.bar(month_list, values, color=colors, width=0.8)
+            ax3.set_title('UNITS EXPIRING EACH MONTH - PLAN YOUR SALES!', fontsize=12, fontweight='bold')
+            ax3.set_ylabel('Number of Units', fontsize=10)
+            ax3.set_xlabel('Month', fontsize=10)
+            ax3.grid(axis='y', alpha=0.3)
+            
+            # Add value labels on top of bars
+            for bar, val, label in zip(bars, values, value_labels):
+                if val > 0:
+                    ax3.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(values)*0.01,
+                            label, ha='center', va='bottom', fontsize=9, fontweight='bold')
+            
+            # Highlight current month
+            current_month = datetime.now().strftime('%b')
+            ax3.text(0.02, 0.95, f'🔴 Current Month: {current_month} - ACT NOW!', 
+                    transform=ax3.transAxes, fontsize=10, color='#e74c3c', fontweight='bold')
+        else:
+            ax3.text(0.5, 0.5, 'No expiry data available', ha='center', va='center')
+        
+        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=0)
+        fig3.tight_layout()
+        
+        canvas3 = FigureCanvasTkAgg(fig3, frame3)
+        canvas3.draw()
+        canvas3.get_tk_widget().pack(fill='both', expand=True)
+        
+        # ========== GRAPH 4-5: TOP SELLERS + CATEGORIES ==========
+        graph_row2 = tk.Frame(main, bg='#f5f5f5')
+        graph_row2.pack(fill='x', pady=10)
+        
+        # Graph 4: Top Sellers (LEFT)
+        frame4 = tk.LabelFrame(graph_row2, text="🏆 Top 5 Best Selling Products", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame4.pack(side='left', fill='both', expand=True, padx=3)
+        
+        fig4 = Figure(figsize=(6, 4), dpi=100)
+        fig4.patch.set_facecolor('white')
+        ax4 = fig4.add_subplot(111)
+        
+        if top_sellers:
+            products = [p[0][:20] + '..' if len(p[0]) > 20 else p[0] for p in top_sellers]
+            quantities = [p[1] for p in top_sellers]
+            revenues = [p[2] for p in top_sellers]
+            
+            bars = ax4.barh(products, quantities, color='#3498db')
+            ax4.set_xlabel('Quantity Sold', fontsize=9)
+            ax4.set_title('Most Popular Medicines', fontsize=10, fontweight='bold')
+            
+            for i, (bar, qty, rev) in enumerate(zip(bars, quantities, revenues)):
+                ax4.text(qty + max(quantities)*0.01, bar.get_y() + bar.get_height()/2,
+                        f'{qty} units\n({rev:,.0f} Birr)', va='center', fontsize=8)
+        else:
+            ax4.text(0.5, 0.5, 'No sales data yet', ha='center', va='center')
+        
+        fig4.tight_layout()
+        canvas4 = FigureCanvasTkAgg(fig4, frame4)
+        canvas4.draw()
+        canvas4.get_tk_widget().pack(fill='both', expand=True)
+        
+        # Graph 5: Categories (RIGHT)
+        frame5 = tk.LabelFrame(graph_row2, text="📊 Products by Category", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame5.pack(side='right', fill='both', expand=True, padx=3)
+        
+        fig5 = Figure(figsize=(6, 4), dpi=100)
+        fig5.patch.set_facecolor('white')
+        ax5 = fig5.add_subplot(111)
+        
+        if categories:
+            cat_names = [c[0][:15] + '..' if len(c[0]) > 15 else c[0] for c in categories[:5]]
+            cat_counts = [c[1] for c in categories[:5]]
+            cat_units = [c[2] for c in categories[:5]]
+            
+            colors = plt.cm.Set3(np.linspace(0, 1, len(cat_names)))
+            bars = ax5.bar(cat_names, cat_counts, color=colors)
+            ax5.set_title('Inventory Distribution by Category', fontsize=10, fontweight='bold')
+            ax5.set_ylabel('Number of Products', fontsize=9)
+            
+            for bar, count, units in zip(bars, cat_counts, cat_units):
+                height = bar.get_height()
+                ax5.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                        f'{count} products\n({units} units)', ha='center', va='bottom', fontsize=8)
+        else:
+            ax5.text(0.5, 0.5, 'No category data', ha='center', va='center')
+        
+        plt.setp(ax5.xaxis.get_majorticklabels(), rotation=15)
+        fig5.tight_layout()
+        canvas5 = FigureCanvasTkAgg(fig5, frame5)
+        canvas5.draw()
+        canvas5.get_tk_widget().pack(fill='both', expand=True)
+        
+        # ========== GRAPH 6-7: SALES TREND + WEEKDAY PATTERN ==========
+        graph_row3 = tk.Frame(main, bg='#f5f5f5')
+        graph_row3.pack(fill='x', pady=10)
+        
+        # Graph 6: Monthly Sales Trend (LEFT)
+        frame6 = tk.LabelFrame(graph_row3, text="📈 Sales Performance - Last 12 Months", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame6.pack(side='left', fill='both', expand=True, padx=3)
+        
+        fig6 = Figure(figsize=(7, 4), dpi=100)
+        fig6.patch.set_facecolor('white')
+        ax6 = fig6.add_subplot(111)
+        
+        months_list = list(monthly_sales.keys())
+        sales_values = list(monthly_sales.values())
+        
+        if sum(sales_values) > 0:
+            ax6.plot(months_list, sales_values, marker='o', linewidth=2, markersize=8, color='#e67e22')
+            ax6.fill_between(months_list, sales_values, alpha=0.3, color='#f39c12')
+            ax6.set_title('Monthly Revenue Trend', fontsize=10, fontweight='bold')
+            ax6.set_ylabel('Sales (Birr)', fontsize=9)
+            ax6.grid(True, alpha=0.3)
+            
+            for i, (month, val) in enumerate(zip(months_list, sales_values)):
+                if val > 0:
+                    ax6.annotate(f'{val:,.0f}', (month, val), textcoords="offset points", 
+                            xytext=(0,10), ha='center', fontsize=8, fontweight='bold')
+            
+            # Add trend indicator
+            if len(sales_values) >= 2:
+                trend = sales_values[-1] - sales_values[0]
+                trend_text = f'📊 12-Month Trend: {"▲ +" if trend > 0 else "▼ "}{abs(trend):,.0f} Birr'
+                trend_color = '#2ecc71' if trend > 0 else '#e74c3c'
+                ax6.text(0.02, 0.95, trend_text, transform=ax6.transAxes, 
+                        fontsize=9, color=trend_color, fontweight='bold')
+        else:
+            ax6.text(0.5, 0.5, 'No sales data', ha='center', va='center')
+        
+        plt.setp(ax6.xaxis.get_majorticklabels(), rotation=45)
+        fig6.tight_layout()
+        canvas6 = FigureCanvasTkAgg(fig6, frame6)
+        canvas6.draw()
+        canvas6.get_tk_widget().pack(fill='both', expand=True)
+        
+        # Graph 7: Weekday Sales Pattern (RIGHT)
+        frame7 = tk.LabelFrame(graph_row3, text="📅 Best Selling Days", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame7.pack(side='right', fill='both', expand=True, padx=3)
+        
+        fig7 = Figure(figsize=(5, 4), dpi=100)
+        fig7.patch.set_facecolor('white')
+        ax7 = fig7.add_subplot(111)
+        
+        days = list(weekdays.keys())
+        day_values = list(weekdays.values())
+        
+        if sum(day_values) > 0:
+            colors = ['#3498db' if i < 5 else '#e67e22' for i in range(7)]
+            bars = ax7.bar(days, day_values, color=colors)
+            ax7.set_title('Sales by Day of Week', fontsize=10, fontweight='bold')
+            ax7.set_ylabel('Sales (Birr)', fontsize=9)
+            
+            for bar, val in zip(bars, day_values):
+                if val > 0:
+                    ax7.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(day_values)*0.01,
+                            f'{val:,.0f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
+            
+            # Find best day
+            best_day = days[day_values.index(max(day_values))]
+            ax7.text(0.05, 0.95, f'⭐ Best Day: {best_day}', transform=ax7.transAxes, 
+                    fontsize=9, color='#f39c12', fontweight='bold')
+        else:
+            ax7.text(0.5, 0.5, 'No sales data', ha='center', va='center')
+        
+        fig7.tight_layout()
+        canvas7 = FigureCanvasTkAgg(fig7, frame7)
+        canvas7.draw()
+        canvas7.get_tk_widget().pack(fill='both', expand=True)
+        
+        # ========== GRAPH 8: PRICE RANGE DISTRIBUTION ==========
+        frame8 = tk.LabelFrame(main, text="💰 Price Range Distribution - Where Your Stock Value Is", 
+                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame8.pack(fill='x', pady=10)
+        
+        fig8 = Figure(figsize=(12, 3.5), dpi=100)
+        fig8.patch.set_facecolor('white')
+        ax8 = fig8.add_subplot(111)
+        
+        ranges = list(price_ranges.keys())
+        range_values = list(price_ranges.values())
+        
+        if sum(range_values) > 0:
+            colors = plt.cm.viridis(np.linspace(0, 1, len(ranges)))
+            bars = ax8.bar(ranges, range_values, color=colors, width=0.7)
+            ax8.set_title('Stock Distribution by Price Range', fontsize=11, fontweight='bold')
+            ax8.set_ylabel('Number of Units', fontsize=9)
+            ax8.set_xlabel('Price Range (Birr)', fontsize=9)
+            
+            for bar, val in zip(bars, range_values):
+                if val > 0:
+                    ax8.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(range_values)*0.01,
+                            f'{val:,} units', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        else:
+            ax8.text(0.5, 0.5, 'No price data', ha='center', va='center')
+        
+        fig8.tight_layout()
+        canvas8 = FigureCanvasTkAgg(fig8, frame8)
+        canvas8.draw()
+        canvas8.get_tk_widget().pack(fill='both', expand=True)
+        
+        # ========== LOSS WARNING SECTION ==========
+        if expired['units'] > 0 or expiring['units'] > 0:
+            warn_frame = tk.Frame(main, bg='#fdeded', padx=20, pady=15)
+            warn_frame.pack(fill='x', pady=10)
+            
+            tk.Label(warn_frame, text="⚠️ CRITICAL WARNING - FINANCIAL LOSS DETECTED", 
+                    bg='#fdeded', fg='#c0392b', font=('Segoe UI', 13, 'bold')).pack()
+            
+            if expired['units'] > 0:
+                loss_text = f"❌ You have already LOST {expired['value']:,.0f} Birr from {expired['units']} expired units!"
+                tk.Label(warn_frame, text=loss_text, bg='#fdeded', fg='#c0392b',
+                        font=('Segoe UI', 11)).pack()
+            
+            if expiring['units'] > 0:
+                risk_text = f"⏰ {expiring['units']} units worth {expiring['value']:,.0f} Birr will expire in 30 days - SELL NOW!"
+                tk.Label(warn_frame, text=risk_text, bg='#fdeded', fg='#e67e22',
+                        font=('Segoe UI', 11, 'bold')).pack()
+        
+        # ========== ACTION ITEMS ==========
+        action_frame = tk.Frame(main, bg='#e8f4f8', padx=20, pady=12)
+        action_frame.pack(fill='x', pady=10)
+        
+        tk.Label(action_frame, text="🎯 YOUR NEXT ACTIONS:", bg='#e8f4f8', fg='#2980b9',
+                font=('Segoe UI', 12, 'bold')).pack(anchor='w')
+        
+        actions = []
+        if low_stock['units'] > 0:
+            actions.append(f"📦 Reorder {low_stock['count']} low stock items ({low_stock['units']} units)")
+        if expiring['units'] > 0:
+            actions.append(f"🏷️ RUN SALE on {expiring['count']} products expiring soon")
+        if expired['units'] > 0:
+            actions.append(f"🗑️ Remove {expired['count']} expired products immediately")
+        if len(top_sellers) > 0:
+            actions.append(f"⭐ Stock more of your top sellers")
+        
+        if actions:
+            for action in actions:
+                tk.Label(action_frame, text=action, bg='#e8f4f8', fg='#2c3e50',
+                        font=('Segoe UI', 10), anchor='w').pack(anchor='w', pady=2)
+        else:
+            tk.Label(action_frame, text="✅ All systems optimal! Keep up the good work!",
+                    bg='#e8f4f8', fg='#27ae60', font=('Segoe UI', 11, 'bold')).pack()
+        
+        # ========== FOOTER ==========
+        footer = tk.Frame(main, bg='#f5f5f5')
+        footer.pack(fill='x', pady=(15, 5))
+        
+        tk.Label(footer, text="MERawi Pharmacy Pro - Business Intelligence Dashboard", 
+                bg='#f5f5f5', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
+        tk.Label(footer, text="Merawi Yohannes · 0921-540-245 · merawiyohannes@gmail.com", 
+                bg='#f5f5f5', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
     # ========== MEDICINES TAB ==========
     
     def create_medicines_tab(self):
@@ -2192,7 +2469,7 @@ class PharmacyApp:
                 font=('Segoe UI', 8)).pack(anchor='w')
         tk.Label(card4, text=f"{today_revenue:,.0f}", bg='#2c3e50', fg='#2ecc71',
                 font=('Segoe UI', 18, 'bold')).pack(side='left', padx=5)
-        tk.Label(card4, text=f"({today_transactions})", bg='#2c3e50', fg='#95a5a6',
+        tk.Label(card4, text=f"transactions({today_transactions})", bg='#2c3e50', fg='#95a5a6',
                 font=('Segoe UI', 10)).pack(side='left')
         
         # Card 5
@@ -2232,7 +2509,7 @@ class PharmacyApp:
             item.pack(fill='x', pady=2)
             
             tk.Label(item, text=label, bg='#2c3e50', fg=color,
-                    font=('Segoe UI', 10, 'bold'), width=12, anchor='w').pack(side='left')
+                    font=('Segoe UI', 10, 'bold'), width=14, anchor='w').pack(side='left')
             tk.Label(item, text=f"{count} products", bg='#2c3e50', fg='#ecf0f1',
                     font=('Segoe UI', 10), width=10).pack(side='left')
             tk.Label(item, text=f"{units:,} units", bg='#2c3e50', fg='#bdc3c7',
