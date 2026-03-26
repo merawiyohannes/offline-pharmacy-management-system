@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import sqlite3
 from datetime import datetime, timedelta
+import json
 import os
 import csv
 import hashlib
@@ -47,11 +48,82 @@ class PharmacyApp:
         self.create_sales_tab()
         self.create_reports_tab()
         self.create_dashboard_tab()
+        self.create_bin_card_tab()
         
         # Load initial data
         self.load_medicines()
         self.check_alerts()
+        
+        self._last_tab = self.medicines_frame
+        self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
+        self._switching_tab = False
     
+    def show_settings(self):
+        config = self.load_config()
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Settings")
+        dialog.geometry("400x250")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Mode selection
+        mode_frame = tk.LabelFrame(dialog, text="Sales Mode", padx=10, pady=10)
+        mode_frame.pack(fill='x', padx=10, pady=5)
+        
+        mode_var = tk.BooleanVar(value=config.get('government_mode', False))
+        tk.Checkbutton(mode_frame, text="Government Mode (enables TIN and fiscal printer)", 
+                    variable=mode_var).pack(anchor='w')
+        
+        # TIN entry
+        tin_frame = tk.LabelFrame(dialog, text="Taxpayer Identification Number (TIN)", padx=10, pady=10)
+        tin_frame.pack(fill='x', padx=10, pady=5)
+        
+        tin_entry = tk.Entry(tin_frame, width=30)
+        tin_entry.insert(0, config.get('tin', ''))
+        tin_entry.pack(anchor='w', pady=5)
+        
+        # Function to show/hide TIN field based on mode
+        def toggle_tin_state(*args):
+            if mode_var.get():
+                tin_entry.config(state='normal')
+            else:
+                tin_entry.config(state='disabled')
+                tin_entry.delete(0, tk.END)
+        mode_var.trace_add('write', toggle_tin_state)
+        toggle_tin_state()   # initial state
+        
+        # Save button
+        def save_settings():
+            new_config = {
+                'government_mode': mode_var.get(),
+                'tin': tin_entry.get().strip() if mode_var.get() else ''
+            }
+            self.save_config(new_config)
+            self.apply_settings()
+            messagebox.showinfo("Settings Saved", "The sales tab has been updated.")
+            dialog.destroy()
+        
+        tk.Button(dialog, text="Save", command=save_settings, bg='#2c3e50', fg='white',
+                font=('Segoe UI', 10), padx=10).pack(pady=10)
+    
+    def load_config(self):
+        config_file = self.get_config_path()
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
+        return {}
+
+    def save_config(self, config):
+        with open(self.get_config_path(), 'w') as f:
+            json.dump(config, f, indent=4)
+    
+    def get_config_path(self):
+        return os.path.join(self.get_app_data_dir(), 'config.json')
+        
     # ========== DATA DIRECTORY MANAGEMENT ==========
     
     def get_app_data_dir(self):
@@ -250,7 +322,7 @@ class PharmacyApp:
         price_frame = tk.Frame(main_frame, bg='#2c3e50', padx=15, pady=10)
         price_frame.pack(fill='x', pady=10)
         
-        tk.Label(price_frame, text="15,000 ETB", bg='#2c3e50', fg='white',
+        tk.Label(price_frame, text="20k - 30k ETB", bg='#2c3e50', fg='white',
                 font=('Segoe UI', 18, 'bold')).pack()
         tk.Label(price_frame, text="One-time payment · Lifetime license", bg='#2c3e50', fg='#ecf0f1',
                 font=('Segoe UI', 9)).pack()
@@ -362,6 +434,33 @@ class PharmacyApp:
                     FOREIGN KEY (medicine_id) REFERENCES medicines (id)
                 )
             ''')
+            try:
+                cursor.execute("ALTER TABLE sales ADD COLUMN tin TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE sales ADD COLUMN mode TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE sales ADD COLUMN payment_method TEXT")
+            except sqlite3.OperationalError:
+                pass
+            
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stock_movements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    medicine_id INTEGER NOT NULL,
+                    date TEXT NOT NULL,
+                    type TEXT NOT NULL,  -- 'purchase', 'sale', 'adjustment'
+                    quantity INTEGER NOT NULL,
+                    balance_before INTEGER NOT NULL,
+                    balance_after INTEGER NOT NULL,
+                    reference TEXT,      -- sale_id, purchase_id, etc.
+                    notes TEXT,
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(id)
+                )
+            ''')
             
             conn.commit()
             conn.close()
@@ -427,6 +526,11 @@ class PharmacyApp:
         reports_menu.add_command(label="⚠️ Low Stock Report", command=self.low_stock_report)
         reports_menu.add_command(label="⏰ Expiring Medicines", command=self.expiring_report)
         reports_menu.add_command(label="💰 Today's Sales", command=self.today_sales_report)
+        
+        # Settings menu
+        settings_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="⚙️ Settings", menu=settings_menu)
+        settings_menu.add_command(label="Preferences", command=self.show_settings)
         
         # Help menu
         help_menu = tk.Menu(menubar, tearoff=0)
@@ -1046,7 +1150,176 @@ class PharmacyApp:
                 bg='#f5f5f5', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
         tk.Label(footer, text="Merawi Yohannes · 0921-540-245 · merawiyohannes@gmail.com", 
                 bg='#f5f5f5', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
+    
+    def create_bin_card_tab(self):
+        self.bin_card_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.bin_card_frame, text="📦 Bin Card")
+
+        # ========== LEFT PANEL: Medicine list with search ==========
+        left = tk.Frame(self.bin_card_frame, bg='white')
+        left.pack(side='left', fill='y', padx=5, pady=5)
+
+        tk.Label(left, text="Search Medicine", font=('Segoe UI', 11, 'bold')).pack(pady=(5,0))
+        self.bin_search_var = tk.StringVar()
+        bin_search_entry = tk.Entry(left, textvariable=self.bin_search_var, width=30)
+        bin_search_entry.pack(pady=5)
+        bin_search_entry.bind('<KeyRelease>', self.on_bin_search)
+
+        self.bin_medicine_listbox = tk.Listbox(left, width=35, height=20)
+        self.bin_medicine_listbox.pack(fill='both', expand=True, padx=5, pady=5)
+        self.bin_medicine_listbox.bind('<<ListboxSelect>>', self.on_bin_medicine_select)
+
+        # Add a Refresh button to reload the medicine list (in case new medicines were added)
+        refresh_btn = tk.Button(left, text="🔄 Refresh List", bg='#3498db', fg='white',
+                                font=('Segoe UI', 9), command=self.load_all_medicines)
+        refresh_btn.pack(pady=5)
+
+        # ========== RIGHT PANEL: Movement history with scrollbar ==========
+        right = tk.Frame(self.bin_card_frame, bg='white')
+        right.pack(side='right', fill='both', expand=True, padx=5, pady=5)
+
+        tk.Label(right, text="Movement History", font=('Segoe UI', 11, 'bold')).pack(pady=5)
+
+        # Create a frame to hold the Treeview and scrollbar
+        tree_frame = tk.Frame(right)
+        tree_frame.pack(fill='both', expand=True)
+
+        columns = ('Date', 'Type', 'Quantity', 'Balance', 'Reference')
+        self.movement_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=20)
+        for col in columns:
+            self.movement_tree.heading(col, text=col)
+            self.movement_tree.column(col, width=120)
+
+        # Add vertical scrollbar
+        v_scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.movement_tree.yview)
+        self.movement_tree.configure(yscrollcommand=v_scroll.set)
+
+        # Pack tree and scrollbar
+        self.movement_tree.pack(side='left', fill='both', expand=True)
+        v_scroll.pack(side='right', fill='y')
+
+        # Optional horizontal scrollbar (if needed)
+        h_scroll = ttk.Scrollbar(tree_frame, orient='horizontal', command=self.movement_tree.xview)
+        self.movement_tree.configure(xscrollcommand=h_scroll.set)
+        h_scroll.pack(side='bottom', fill='x')
+
+        # Store all medicines for filtering
+        self.all_medicines = []  # list of (id, name)
+        self.load_all_medicines()
+        self.update_bin_listbox()
+    
+    def load_all_medicines(self):
+        """Load all medicine IDs and names into memory."""
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        cursor.execute('SELECT id, name FROM medicines ORDER BY name')
+        self.all_medicines = cursor.fetchall()
+        conn.close()
+
+    def on_bin_search(self, event):
+        """Filter the medicine list based on search text."""
+        self.update_bin_listbox()
+
+    def update_bin_listbox(self):
+        """Update the listbox with medicines matching the search term."""
+        search_term = self.bin_search_var.get().lower()
+        self.bin_medicine_listbox.delete(0, tk.END)
+        for mid, name in self.all_medicines:
+            if search_term in name.lower():
+                self.bin_medicine_listbox.insert(tk.END, f"{mid}|{name}")
+
+    def on_bin_medicine_select(self, event):
+        selection = self.bin_medicine_listbox.curselection()
+        if not selection:
+            return
+        item = self.bin_medicine_listbox.get(selection[0])
+        medicine_id = item.split('|')[0]
+        # Clear tree
+        for row in self.movement_tree.get_children():
+            self.movement_tree.delete(row)
+        # Fetch movements for this medicine
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT date, type, quantity, balance_after, reference
+            FROM stock_movements
+            WHERE medicine_id = ?
+            ORDER BY date ASC
+        ''', (medicine_id,))
+        movements = cursor.fetchall()
+        for row in movements:
+            date, typ, qty, bal, ref = row
+            display_qty = f"{qty:+d}"  # shows + or -
+            self.movement_tree.insert('', 'end', values=(date, typ, display_qty, bal, ref))
+        conn.close()
+    
     # ========== MEDICINES TAB ==========
+    
+    def check_owner_password(self, feature_name="this feature"):
+        """Ask for owner password before allowing sensitive features."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("🔐 Owner Verification")
+        dialog.geometry("300x150")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (150)
+        y = (dialog.winfo_screenheight() // 2) - (75)
+        dialog.geometry(f'+{x}+{y}')
+        
+        tk.Label(dialog, text=f"Enter password to access {feature_name}:",
+                font=('Segoe UI', 10)).pack(pady=10)
+        
+        entry = tk.Entry(dialog, show="*", font=('Segoe UI', 11), width=20)
+        entry.pack(pady=5)
+        entry.focus_set()
+        
+        result = tk.BooleanVar(value=False)
+        
+        def verify():
+            # Change this password to your own (owner sets it)
+            if entry.get() == "merawi2024":   # ← CHANGE THIS PASSWORD!
+                result.set(True)
+                dialog.destroy()
+            else:
+                messagebox.showerror("Access Denied", "Incorrect password.\nAccess denied.")
+                entry.delete(0, tk.END)
+        
+        tk.Button(dialog, text="OK", bg='#2c3e50', fg='white',
+                font=('Segoe UI', 10), command=verify).pack(pady=5)
+        dialog.bind('<Return>', lambda e: verify())
+        
+        self.root.wait_window(dialog)
+        return result.get()
+    
+    def on_tab_changed(self, event):
+        if getattr(self, '_switching_tab', False):
+            return
+
+        current = self.notebook.nametowidget(self.notebook.select())
+
+        if current == self.dashboard_frame:
+            self._switching_tab = True
+            self.notebook.select(self._last_tab)
+            self._switching_tab = False
+
+            # 2. Ask for password
+            if self.check_owner_password("Dashboard"):
+                self._switching_tab = True
+                self.notebook.select(self.dashboard_frame)
+                self._switching_tab = False
+                self._last_tab = self.dashboard_frame
+            # else, stay on the previous tab (already done)
+        else:
+            self._last_tab = current
+        
+    def test_database_with_password(self):
+        """Wrapper to check password before running test database."""
+        if self.check_owner_password("Database Analytics"):
+            self.test_database_contents()
     
     def create_medicines_tab(self):
         """Create medicines management tab"""
@@ -1067,7 +1340,7 @@ class PharmacyApp:
         tk.Button(toolbar, text="🔄 Refresh", bg='#f39c12', fg='white',
                  font=('Segoe UI', 10), padx=10, command=self.load_medicines).pack(side='left', padx=5, pady=10)
         tk.Button(toolbar, text="🔍 Test DB", bg='#9b59b6', fg='white',
-                 font=('Segoe UI', 10), padx=10, command=self.test_database_contents).pack(side='left', padx=5, pady=10)
+                 font=('Segoe UI', 10), padx=10, command=self.test_database_with_password).pack(side='left', padx=5, pady=10)
         
         # Search
         search_frame = tk.Frame(self.medicines_frame, bg='white', relief='groove', bd=2)
@@ -1194,106 +1467,144 @@ class PharmacyApp:
     # ========== SALES TAB ==========
     
     def create_sales_tab(self):
-        """Create sales tab"""
         self.sales_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.sales_frame, text="💰 Sales")
-        
-        # Tax rate
-        tax_frame = tk.Frame(self.sales_frame, bg='#34495e', height=40)
-        tax_frame.pack(fill='x')
-        tax_frame.pack_propagate(False)
-        
-        tk.Label(tax_frame, text="Tax Rate:", bg='#34495e', fg='white',
-                font=('Segoe UI', 10)).pack(side='left', padx=20, pady=8)
-        
-        self.tax_var = tk.StringVar(value="15")
-        tax_combo = ttk.Combobox(tax_frame, textvariable=self.tax_var,
-                                values=["0", "5", "10", "15"], width=5)
-        tax_combo.pack(side='left', padx=5)
-        tk.Label(tax_frame, text="%", bg='#34495e', fg='white').pack(side='left')
-        
-        # Main area
+
+        # Load configuration
+        config = self.load_config()
+        self.government_mode = config.get('government_mode', False)
+        self.business_tin = config.get('tin', '')
+
+        # ========== TOP TOOLBAR ==========
+        top_bar = tk.Frame(self.sales_frame, bg='#34495e', height=40)
+        top_bar.pack(fill='x')
+        top_bar.pack_propagate(False)
+
+        # Tax rate (only visible in private mode; in government mode it's fixed to 15%)
+        if not self.government_mode:
+            tk.Label(top_bar, text="Tax Rate:", bg='#34495e', fg='white',
+                    font=('Segoe UI', 10)).pack(side='left', padx=20, pady=8)
+            self.tax_var = tk.StringVar(value="15")
+            tax_combo = ttk.Combobox(top_bar, textvariable=self.tax_var,
+                                    values=["0", "5", "10", "15"], width=5)
+            tax_combo.pack(side='left', padx=5)
+            tk.Label(top_bar, text="%", bg='#34495e', fg='white').pack(side='left')
+        else:
+            # Fixed VAT at 15% (store the value for calculations)
+            self.tax_var = tk.StringVar(value="15")
+            # Optionally display a label
+            tk.Label(top_bar, text="VAT 15% (Fixed)", bg='#34495e', fg='white',
+                    font=('Segoe UI', 10)).pack(side='left', padx=20, pady=8)
+
+        # Government‑specific fields: Customer TIN (optional) and Payment Method
+        if self.government_mode:
+            # Customer TIN
+            tin_frame = tk.Frame(top_bar, bg='#34495e')
+            tin_frame.pack(side='left', padx=20)
+            tk.Label(tin_frame, text="Customer TIN:", bg='#34495e', fg='white',
+                    font=('Segoe UI', 9)).pack(side='left')
+            self.customer_tin = tk.Entry(tin_frame, width=15, bg='white')
+            self.customer_tin.pack(side='left', padx=5)
+
+            # Payment Method
+            payment_frame = tk.Frame(top_bar, bg='#34495e')
+            payment_frame.pack(side='left', padx=20)
+            tk.Label(payment_frame, text="Payment:", bg='#34495e', fg='white',
+                    font=('Segoe UI', 9)).pack(side='left')
+            self.payment_method = ttk.Combobox(payment_frame, values=["Cash", "Card", "Transfer", "Other"],
+                                            width=8, state='readonly')
+            self.payment_method.set("Cash")
+            self.payment_method.pack(side='left', padx=5)
+        else:
+            self.customer_tin = None
+            self.payment_method = None
+
+        # ========== MAIN PANED WINDOW (unchanged) ==========
         paned = ttk.PanedWindow(self.sales_frame, orient='horizontal')
         paned.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Left panel
+
+        # LEFT PANEL – product search (same for both modes)
         left = tk.Frame(paned, bg='white', relief='groove', bd=1)
         paned.add(left, weight=1)
-        
+
         tk.Label(left, text="🔍 Search Products", font=('Segoe UI', 11, 'bold'),
                 bg='white', fg='#2c3e50').pack(pady=10)
-        
+
         self.sale_search_entry = tk.Entry(left, width=30, font=('Segoe UI', 11))
         self.sale_search_entry.pack(pady=5)
+        self.sale_search_entry.focus_set()
         self.sale_search_entry.bind('<KeyRelease>', self.search_sale_medicines)
-        
+
         self.search_listbox = tk.Listbox(left, height=8, font=('Segoe UI', 10))
         self.search_listbox.pack(fill='both', expand=True, padx=10, pady=10)
         self.search_listbox.bind('<<ListboxSelect>>', self.on_medicine_select)
-        
+
         qty_frame = tk.Frame(left, bg='white')
         qty_frame.pack(pady=10)
-        
+
         tk.Label(qty_frame, text="Quantity:", font=('Segoe UI', 10)).pack(side='left', padx=5)
         self.sale_qty = tk.Entry(qty_frame, width=10, font=('Segoe UI', 11))
         self.sale_qty.pack(side='left', padx=5)
-        
+
         tk.Button(qty_frame, text="Add to Bill", bg='#27ae60', fg='white',
-                 font=('Segoe UI', 10), padx=15, command=self.add_to_bill).pack(side='left', padx=5)
-        
-        # Right panel
+                font=('Segoe UI', 10), padx=15, command=self.add_to_bill).pack(side='left', padx=5)
+
+        # RIGHT PANEL – bill area
         right = tk.Frame(paned, bg='white', relief='groove', bd=1)
         paned.add(right, weight=1)
-        
+
         tk.Label(right, text="CURRENT BILL", font=('Segoe UI', 11, 'bold'),
                 bg='white', fg='#2c3e50').pack(pady=10)
-        
+
         columns = ('Item', 'Product', 'Price', 'Qty', 'Total')
         self.bill_tree = ttk.Treeview(right, columns=columns, show='headings', height=12)
-        
+
         widths = [50, 200, 80, 50, 100]
         for i, col in enumerate(columns):
             self.bill_tree.heading(col, text=col)
             self.bill_tree.column(col, width=widths[i])
-        
+
         self.bill_tree.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Summary
+
+        # SUMMARY AREA
         summary = tk.Frame(right, bg='#f8f9fa', padx=15, pady=15)
         summary.pack(fill='x', padx=5, pady=5)
-        
+
         subtotal_frame = tk.Frame(summary, bg='#f8f9fa')
         subtotal_frame.pack(fill='x', pady=2)
         tk.Label(subtotal_frame, text="Subtotal:", bg='#f8f9fa').pack(side='left')
         self.subtotal_label = tk.Label(subtotal_frame, text="0.00", bg='#f8f9fa', font=('Segoe UI', 10, 'bold'))
         self.subtotal_label.pack(side='right')
-        
-        tax_frame2 = tk.Frame(summary, bg='#f8f9fa')
-        tax_frame2.pack(fill='x', pady=2)
-        tk.Label(tax_frame2, text="VAT (15%):", bg='#f8f9fa').pack(side='left')
-        self.tax_label = tk.Label(tax_frame2, text="0.00", bg='#f8f9fa', font=('Segoe UI', 10, 'bold'))
+
+        tax_frame = tk.Frame(summary, bg='#f8f9fa')
+        tax_frame.pack(fill='x', pady=2)
+        tk.Label(tax_frame, text="VAT (15%):", bg='#f8f9fa').pack(side='left')
+        self.tax_label = tk.Label(tax_frame, text="0.00", bg='#f8f9fa', font=('Segoe UI', 10, 'bold'))
         self.tax_label.pack(side='right')
-        
+
         tk.Frame(summary, bg='#bdc3c7', height=1).pack(fill='x', pady=5)
-        
+
         total_frame = tk.Frame(summary, bg='#f8f9fa')
         total_frame.pack(fill='x', pady=2)
         tk.Label(total_frame, text="TOTAL:", bg='#f8f9fa', font=('Segoe UI', 12, 'bold')).pack(side='left')
         self.total_label = tk.Label(total_frame, text="0.00 Birr", bg='#f8f9fa',
-                                   font=('Segoe UI', 14, 'bold'), fg='#27ae60')
+                                    font=('Segoe UI', 14, 'bold'), fg='#27ae60')
         self.total_label.pack(side='right')
-        
-        # Buttons
+
+        # BUTTONS
         btn_frame = tk.Frame(right, bg='white')
         btn_frame.pack(fill='x', padx=5, pady=5)
-        
+
         tk.Button(btn_frame, text="❌ Remove", bg='#e67e22', fg='white',
-                 font=('Segoe UI', 9), command=self.remove_from_bill).pack(side='left', padx=2)
+                font=('Segoe UI', 9), command=self.remove_from_bill).pack(side='left', padx=2)
         tk.Button(btn_frame, text="🔄 Clear", bg='#7f8c8d', fg='white',
-                 font=('Segoe UI', 9), command=self.clear_bill).pack(side='left', padx=2)
-        tk.Button(btn_frame, text="✅ Complete Sale", bg='#27ae60', fg='white',
-                 font=('Segoe UI', 10, 'bold'), padx=15, command=self.complete_sale).pack(side='right', padx=2)
-        
+                font=('Segoe UI', 9), command=self.clear_bill).pack(side='left', padx=2)
+
+        # The "Complete Sale" button text can also vary
+        complete_text = "✅ Complete Sale" if not self.government_mode else "✅ Issue Fiscal Receipt"
+        tk.Button(btn_frame, text=complete_text, bg='#27ae60', fg='white',
+                font=('Segoe UI', 10, 'bold'), padx=15, command=self.complete_sale).pack(side='right', padx=2)
+
         self.bill_items = []
     
     def search_sale_medicines(self, event=None):
@@ -1430,7 +1741,7 @@ class PharmacyApp:
         self.update_bill_total()
     
     def complete_sale(self):
-        """Complete sale"""
+        """Complete sale and record stock movements"""
         if not self.bill_items:
             messagebox.showwarning("Warning", "No items in bill")
             return
@@ -1443,15 +1754,38 @@ class PharmacyApp:
             cursor = conn.cursor()
             
             sale_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            receipt_no = f"R{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            mode = 'government' if self.government_mode else 'private'
+            
+            # Prepare fields that depend on mode
+            customer_tin = ''
+            payment_method = ''
+            if self.government_mode:
+                if self.customer_tin:
+                    customer_tin = self.customer_tin.get().strip()
+                if self.payment_method:
+                    payment_method = self.payment_method.get()
             
             for item in self.bill_items:
-                cursor.execute('''
-                    INSERT INTO sales (medicine_id, medicine_name, quantity, price_per_unit, total_price, sale_date)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (item['id'], item['name'], item['qty'], item['price'], item['total'], sale_date))
+                # Get current quantity before update
+                cursor.execute('SELECT quantity FROM medicines WHERE id = ?', (item['id'],))
+                old_qty = cursor.fetchone()[0]
+                new_qty = old_qty - item['qty']
                 
-                cursor.execute('UPDATE medicines SET quantity = quantity - ? WHERE id = ?',
-                             (item['qty'], item['id']))
+                # Update stock
+                cursor.execute('UPDATE medicines SET quantity = ? WHERE id = ?', (new_qty, item['id']))
+                
+                # Insert stock movement
+                cursor.execute('''
+                    INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, reference)
+                    VALUES (?, ?, 'sale', ?, ?, ?, ?)
+                ''', (item['id'], sale_date, -item['qty'], old_qty, new_qty, f"Sale {receipt_no}"))
+                
+                # Insert sales record
+                cursor.execute('''
+                    INSERT INTO sales (medicine_id, medicine_name, quantity, price_per_unit, total_price, sale_date, tin, mode, payment_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (item['id'], item['name'], item['qty'], item['price'], item['total'], sale_date, customer_tin, mode, payment_method))
             
             conn.commit()
             conn.close()
@@ -1462,73 +1796,82 @@ class PharmacyApp:
             
         except Exception as e:
             messagebox.showerror("Error", f"Sale failed: {str(e)}")
-    
+            
     def show_receipt(self):
-        """Show receipt"""
         receipt = tk.Toplevel(self.root)
         receipt.title("🧾 Receipt")
         receipt.geometry("400x600")
         receipt.configure(bg='white')
-        
+
         # Header
         tk.Label(receipt, text="MERAWI PHARMACY PRO", bg='#2c3e50', fg='white',
                 font=('Segoe UI', 14, 'bold'), pady=10).pack(fill='x')
-        
-        tk.Label(receipt, text="Tax Invoice", bg='white', fg='#34495e',
-                font=('Segoe UI', 12)).pack()
-        
-        # Details
-        details = tk.Frame(receipt, bg='white', padx=20, pady=10)
-        details.pack(fill='x')
-        
+
+        # Receipt info frame
+        info_frame = tk.Frame(receipt, bg='white', padx=20, pady=10)
+        info_frame.pack(fill='x')
+
         receipt_no = f"R{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        tk.Label(details, text=f"Receipt No: {receipt_no}", bg='white',
-                font=('Segoe UI', 9)).pack(anchor='w')
-        tk.Label(details, text=f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                bg='white', font=('Segoe UI', 9)).pack(anchor='w')
-        
+        tk.Label(info_frame, text=f"Receipt No: {receipt_no}",
+                bg='white', font=('Courier', 10)).pack(anchor='w')
+        tk.Label(info_frame, text=f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                bg='white', font=('Courier', 10)).pack(anchor='w')
+
+        if self.government_mode:
+            # Show TINs and payment method
+            tk.Label(info_frame, text=f"Business TIN: {self.business_tin}",
+                    bg='white', font=('Courier', 10)).pack(anchor='w')
+            customer_tin = self.customer_tin.get().strip() if self.customer_tin else ''
+            if customer_tin:
+                tk.Label(info_frame, text=f"Customer TIN: {customer_tin}",
+                        bg='white', font=('Courier', 10)).pack(anchor='w')
+            payment_method = self.payment_method.get() if self.payment_method else ''
+            tk.Label(info_frame, text=f"Payment: {payment_method}",
+                    bg='white', font=('Courier', 10)).pack(anchor='w')
+
+        # Separator
         tk.Label(receipt, text="="*50, bg='white').pack()
-        
+
         # Items
-        text = tk.Text(receipt, height=15, width=45, bg='white', font=('Courier', 9))
+        text = tk.Text(receipt, height=12, width=45, bg='white', font=('Courier', 9))
         text.pack(padx=20, pady=10)
-        
-        text.insert('end', "\n")
+
+        # Insert items
         for item in self.bill_items:
             text.insert('end', f"{item['name'][:25]:25}\n")
             text.insert('end', f"  {item['qty']:3} x {item['price']:7.2f} = {item['total']:8.2f}\n")
-        
-        text.insert('end', "\n" + "-"*40 + "\n")
-        
+
+        # Totals
         subtotal = sum(item['total'] for item in self.bill_items)
         tax_rate = float(self.tax_var.get())
-        tax = subtotal * (tax_rate/100)
-        total = subtotal + tax
-        
+        tax_amount = subtotal * (tax_rate/100)
+        total = subtotal + tax_amount
+
+        text.insert('end', "\n" + "-"*40 + "\n")
         text.insert('end', f"Subtotal: {subtotal:27.2f}\n")
-        text.insert('end', f"VAT ({tax_rate}%): {tax:24.2f}\n")
+        text.insert('end', f"VAT ({tax_rate}%): {tax_amount:24.2f}\n")
         text.insert('end', "-"*40 + "\n")
         text.insert('end', f"TOTAL: {total:30.2f} Birr\n")
         text.insert('end', "="*40 + "\n")
-        text.insert('end', "Thank you for your business!\n")
-        
+        text.insert('end', "Thank you for your purchase!\n")
+
         text.config(state='disabled')
-        
+
         # Buttons
         btn_frame = tk.Frame(receipt, bg='white')
         btn_frame.pack(pady=10)
-        
+
         tk.Button(btn_frame, text="💾 Save PDF", bg='#3498db', fg='white',
-                 font=('Segoe UI', 10), command=lambda: self.save_receipt_pdf(text.get(1.0, 'end-1c'))).pack(side='left', padx=5)
-        
+                font=('Segoe UI', 10), command=lambda: self.save_receipt_pdf(text.get(1.0, 'end-1c'))).pack(side='left', padx=5)
+
         tk.Button(btn_frame, text="📄 Save Text", bg='#2ecc71', fg='white',
-                 font=('Segoe UI', 10), command=lambda: self.save_receipt_text(text.get(1.0, 'end-1c'))).pack(side='left', padx=5)
-        
+                font=('Segoe UI', 10), command=lambda: self.save_receipt_text(text.get(1.0, 'end-1c'))).pack(side='left', padx=5)
+
         tk.Button(btn_frame, text="🖨️ Print", bg='#e67e22', fg='white',
-                 font=('Segoe UI', 10), command=lambda: self.print_receipt(text.get(1.0, 'end-1c'))).pack(side='left', padx=5)
-        
+                font=('Segoe UI', 10), command=lambda: self.print_receipt(text.get(1.0, 'end-1c'))).pack(side='left', padx=5)
+
         tk.Button(btn_frame, text="❌ Close", bg='#e74c3c', fg='white',
-                 font=('Segoe UI', 10), command=receipt.destroy).pack(side='left', padx=5)
+                font=('Segoe UI', 10), command=receipt.destroy).pack(side='left', padx=5)
     
     def save_receipt_pdf(self, receipt_text):
         """Save receipt as PDF"""
@@ -1894,7 +2237,13 @@ class PharmacyApp:
                     entries["Location:"].get().strip(),
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 ))
-                
+                medicine_id = cursor.lastrowid
+                quantity = int(entries["Quantity:"].get() or 0)
+                if quantity > 0:
+                    cursor.execute('''
+                        INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                        VALUES (?, ?, 'purchase', ?, 0, ?, ?)
+                    ''', (medicine_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), quantity, quantity, "Initial stock"))
                 conn.commit()
                 conn.close()
                 
@@ -2004,9 +2353,17 @@ class PharmacyApp:
                     entries["Location:"].get(),
                     med_id
                 ))
+                old_qty = med[6]  
+                new_qty = int(entries["Quantity:"].get() or 0)
+                diff = new_qty - old_qty
+                # After updating the medicine:
+                if diff != 0:
+                    cursor.execute('''
+                        INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                        VALUES (?, ?, 'adjustment', ?, ?, ?, ?)
+                    ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), diff, old_qty, new_qty, "Manual adjustment"))
                 conn.commit()
                 conn.close()
-                
                 dialog.destroy()
                 self.load_medicines()
                 messagebox.showinfo("Success", "Medicine updated!")
@@ -2023,29 +2380,45 @@ class PharmacyApp:
                  font=('Segoe UI', 12), padx=30, command=dialog.destroy).pack(side='left', padx=10)
     
     def delete_medicine(self):
-        """Delete medicine"""
+        """Delete medicine and record deletion movement"""
         selected = self.medicines_tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a medicine")
             return
         
-        if messagebox.askyesno("Confirm", "Delete this medicine?"):
-            item = self.medicines_tree.item(selected[0])
-            med_id = item['values'][0]
+        if not messagebox.askyesno("Confirm", "Delete this medicine? This will remove all stock records."):
+            return
+        
+        item = self.medicines_tree.item(selected[0])
+        med_id = item['values'][0]
+        
+        try:
+            conn = sqlite3.connect(self.get_database_path())
+            cursor = conn.cursor()
             
-            try:
-                conn = sqlite3.connect(self.get_database_path())
-                cursor = conn.cursor()
-                cursor.execute('DELETE FROM medicines WHERE id = ?', (med_id,))
-                conn.commit()
-                conn.close()
-                
-                self.load_medicines()
-                messagebox.showinfo("Success", "Medicine deleted")
-                
-            except Exception as e:
-                messagebox.showerror("Error", f"Delete failed: {str(e)}")
-    
+            # Get current quantity before deletion
+            cursor.execute('SELECT quantity FROM medicines WHERE id = ?', (med_id,))
+            old_qty = cursor.fetchone()[0]
+            
+            # Insert stock movement to zero out
+            if old_qty > 0:
+                cursor.execute('''
+                    INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                    VALUES (?, ?, 'deletion', ?, ?, 0, ?)
+                ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), -old_qty, old_qty, "Medicine deleted"))
+            
+            # Delete the medicine
+            cursor.execute('DELETE FROM medicines WHERE id = ?', (med_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            self.load_medicines()
+            messagebox.showinfo("Success", "Medicine deleted")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Delete failed: {str(e)}")
+        
     # ========== BACKUP & IMPORT ==========
     
     def backup_to_excel(self):
@@ -2663,6 +3036,23 @@ class PharmacyApp:
         
         if alerts:
             messagebox.showwarning("🔔 Alerts", "\n".join(alerts))
+    
+    def apply_settings(self):
+        """Reload config, refresh sales tab, and reset dashboard authorization."""
+        config = self.load_config()
+        self.government_mode = config.get('government_mode', False)
+        self.business_tin = config.get('tin', '')
+        self._dashboard_authorized = False   # ensures dashboard asks password again
+        self.refresh_sales_tab()
+
+    def refresh_sales_tab(self):
+        """Remove and recreate the sales tab, then select it."""
+        for i in range(self.notebook.index('end')):
+            if self.notebook.tab(i, 'text') == "💰 Sales":
+                self.notebook.forget(i)
+                break
+        self.create_sales_tab()
+        self.notebook.select(self.sales_frame)
     
     # ========== ABOUT ==========
     
