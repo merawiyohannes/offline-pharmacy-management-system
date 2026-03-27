@@ -2468,7 +2468,7 @@ class PharmacyApp:
             messagebox.showerror("Error", f"Backup failed: {str(e)}")
     
     def import_from_excel(self):
-        """Import from Excel"""
+        """Import from Excel with header validation and bin card recording (using name, category, batch as key)"""
         filename = filedialog.askopenfilename(
             title="Select File",
             filetypes=[("Excel files", "*.csv *.xlsx"), ("All files", "*.*")]
@@ -2490,170 +2490,311 @@ class PharmacyApp:
             import_count = 0
             update_count = 0
             skip_count = 0
+            error_rows = []
             
+            # Expected columns (in order, but we map by name)
+            expected_columns = [
+                "name", "category", "manufacturer", "batch_number", "expiry_date",
+                "quantity", "purchase_price", "selling_price", "min_stock", "location"
+            ]
+            # Required columns for validation
+            required_columns = ["name", "category", "batch_number", "quantity", "selling_price"]
+            
+            def map_header(header_row):
+                """Return dict mapping expected column name to index using flexible aliases."""
+                # Aliases for each expected column
+                aliases = {
+                    "name": ["name", "medicine", "product"],
+                    "category": ["category", "cat"],
+                    "manufacturer": ["manufacturer", "company", "brand"],
+                    "batch_number": ["batch_number", "batch", "batchno", "lot"],
+                    "expiry_date": ["expiry_date", "expiry", "exp", "expiration"],
+                    "quantity": ["quantity", "qty", "stock"],
+                    "purchase_price": ["purchase_price", "purchase", "cost", "buy price"],
+                    "selling_price": ["selling_price", "selling", "price", "sell price"],
+                    "min_stock": ["min_stock", "min", "minimum", "alert"],
+                    "location": ["location", "shelf", "rack"]
+                }
+                header_lower = [str(cell).strip().lower() for cell in header_row]
+                col_map = {}
+                for expected, alias_list in aliases.items():
+                    for i, col in enumerate(header_lower):
+                        if any(alias in col for alias in alias_list):
+                            col_map[expected] = i
+                            break
+                # Check required columns
+                missing = [col for col in required_columns if col not in col_map]
+                if missing:
+                    raise ValueError(f"Missing required columns: {', '.join(missing)}")
+                return col_map
+            
+            # ---------- CSV ----------
             if filename.lower().endswith('.csv'):
                 with open(filename, 'r', encoding='utf-8-sig') as f:
                     reader = csv.reader(f)
-                    next(reader)  # Skip header
+                    header = next(reader, None)
+                    if not header:
+                        raise ValueError("File is empty")
+                    col_map = map_header(header)
                     
-                    for row in reader:
-                        if len(row) < 6:
+                    for row_num, row in enumerate(reader, start=2):
+                        # Ensure row has enough columns
+                        if len(row) < max(col_map.values()) + 1:
                             skip_count += 1
+                            error_rows.append(f"Row {row_num}: insufficient columns")
                             continue
                         
                         try:
-                            name = row[1].strip() if len(row) > 1 else ""
+                            # Required fields
+                            name = row[col_map["name"]].strip()
                             if not name:
                                 skip_count += 1
+                                error_rows.append(f"Row {row_num}: missing name")
                                 continue
                             
-                            category = row[2].strip() if len(row) > 2 else ""
-                            manufacturer = row[3].strip() if len(row) > 3 else ""
-                            batch = row[4].strip() if len(row) > 4 else ""
-                            expiry = row[5].strip() if len(row) > 5 else ""
+                            category = row[col_map["category"]].strip()
+                            if not category:
+                                skip_count += 1
+                                error_rows.append(f"Row {row_num}: missing category")
+                                continue
                             
+                            batch = row[col_map["batch_number"]].strip()
+                            if not batch:
+                                skip_count += 1
+                                error_rows.append(f"Row {row_num}: missing batch number")
+                                continue
+                            
+                            # Numeric required
+                            qty_str = row[col_map["quantity"]].strip()
                             try:
-                                qty = int(float(row[6])) if len(row) > 6 and row[6] else 0
+                                qty = int(float(qty_str)) if qty_str else 0
                             except:
                                 qty = 0
                             
+                            selling_str = row[col_map["selling_price"]].strip()
                             try:
-                                purchase = float(row[7]) if len(row) > 7 and row[7] else 0
-                            except:
-                                purchase = 0
-                            
-                            try:
-                                selling = float(row[8]) if len(row) > 8 and row[8] else 0
+                                selling = float(selling_str) if selling_str else 0
                             except:
                                 selling = 0
                             
+                            # Optional fields
+                            manufacturer = row[col_map["manufacturer"]].strip() if "manufacturer" in col_map else ""
+                            expiry = row[col_map["expiry_date"]].strip() if "expiry_date" in col_map else ""
+                            purchase_str = row[col_map["purchase_price"]].strip() if "purchase_price" in col_map else "0"
                             try:
-                                min_stock = int(float(row[9])) if len(row) > 9 and row[9] else 10
+                                purchase = float(purchase_str) if purchase_str else 0
+                            except:
+                                purchase = 0
+                            min_stock_str = row[col_map["min_stock"]].strip() if "min_stock" in col_map else "10"
+                            try:
+                                min_stock = int(float(min_stock_str)) if min_stock_str else 10
                             except:
                                 min_stock = 10
+                            location = row[col_map["location"]].strip() if "location" in col_map else ""
                             
-                            location = row[10].strip() if len(row) > 10 else ""
-                            
-                            # Check if exists
-                            cursor.execute('SELECT id, quantity FROM medicines WHERE name = ? AND batch_number = ?',
-                                         (name, batch))
+                            # Check if medicine exists by name, category, batch
+                            cursor.execute('''
+                                SELECT id, quantity FROM medicines 
+                                WHERE name = ? AND category = ? AND batch_number = ?
+                            ''', (name, category, batch))
                             existing = cursor.fetchone()
                             
                             if existing:
-                                new_qty = existing[1] + qty
+                                med_id, old_qty = existing
+                                new_qty = old_qty + qty
+                                # Update medicine (update all fields except id and date_added)
                                 cursor.execute('''
-                                    UPDATE medicines SET quantity = ?, purchase_price = ?,
-                                    selling_price = ?, expiry_date = ?, location = ?
+                                    UPDATE medicines SET
+                                        manufacturer = ?,
+                                        expiry_date = ?,
+                                        quantity = ?,
+                                        purchase_price = ?,
+                                        selling_price = ?,
+                                        min_stock = ?,
+                                        location = ?
                                     WHERE id = ?
-                                ''', (new_qty, purchase, selling, expiry, location, existing[0]))
+                                ''', (manufacturer, expiry, new_qty, purchase, selling, min_stock, location, med_id))
+                                
+                                # Record bin movement if quantity increased
+                                if qty > 0:
+                                    cursor.execute('''
+                                        INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                                        VALUES (?, ?, 'adjustment', ?, ?, ?, ?)
+                                    ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), qty, old_qty, new_qty, f"Import adjustment (+{qty})"))
                                 update_count += 1
                             else:
+                                # Insert new medicine
                                 cursor.execute('''
-                                    INSERT INTO medicines (name, category, manufacturer, batch_number,
-                                    expiry_date, quantity, purchase_price, selling_price, min_stock, location, date_added)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    INSERT INTO medicines (
+                                        name, category, manufacturer, batch_number, expiry_date,
+                                        quantity, purchase_price, selling_price, min_stock, location, date_added
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 ''', (name, category, manufacturer, batch, expiry, qty, purchase,
-                                     selling, min_stock, location, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                                    selling, min_stock, location, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                                med_id = cursor.lastrowid
+                                
+                                # Record initial stock movement
+                                if qty > 0:
+                                    cursor.execute('''
+                                        INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                                        VALUES (?, ?, 'purchase', ?, 0, ?, ?)
+                                    ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), qty, qty, "Initial stock from import"))
                                 import_count += 1
                                 
                         except Exception as e:
                             skip_count += 1
+                            error_rows.append(f"Row {row_num}: {str(e)}")
                             continue
             
+            # ---------- Excel (XLSX) ----------
             elif filename.lower().endswith('.xlsx'):
                 from openpyxl import load_workbook
                 wb = load_workbook(filename, data_only=True)
                 sheet = wb.active
                 
-                for row in sheet.iter_rows(min_row=2, values_only=True):
-                    if not row or not any(row):
+                header_row = [cell.value for cell in sheet[1]]
+                if not header_row:
+                    raise ValueError("File is empty")
+                col_map = map_header(header_row)
+                
+                for row_num, row in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+                    if not row:
                         continue
                     
                     try:
-                        name = str(row[1]) if len(row) > 1 and row[1] else ""
+                        # Required fields
+                        name = str(row[col_map["name"]]).strip() if row[col_map["name"]] else ""
                         if not name:
                             skip_count += 1
+                            error_rows.append(f"Row {row_num}: missing name")
                             continue
                         
-                        category = str(row[2]) if len(row) > 2 and row[2] else ""
-                        manufacturer = str(row[3]) if len(row) > 3 and row[3] else ""
-                        batch = str(row[4]) if len(row) > 4 and row[4] else ""
+                        category = str(row[col_map["category"]]).strip() if row[col_map["category"]] else ""
+                        if not category:
+                            skip_count += 1
+                            error_rows.append(f"Row {row_num}: missing category")
+                            continue
                         
-                        expiry = row[5]
-                        if isinstance(expiry, datetime):
-                            expiry = expiry.strftime('%Y-%m-%d')
-                        else:
-                            expiry = str(expiry) if expiry else ""
+                        batch = str(row[col_map["batch_number"]]).strip() if row[col_map["batch_number"]] else ""
+                        if not batch:
+                            skip_count += 1
+                            error_rows.append(f"Row {row_num}: missing batch number")
+                            continue
                         
+                        # Numeric required
+                        qty_val = row[col_map["quantity"]]
                         try:
-                            qty = int(float(row[6])) if len(row) > 6 and row[6] else 0
+                            qty = int(float(qty_val)) if qty_val is not None else 0
                         except:
                             qty = 0
                         
+                        selling_val = row[col_map["selling_price"]]
                         try:
-                            purchase = float(row[7]) if len(row) > 7 and row[7] else 0
-                        except:
-                            purchase = 0
-                        
-                        try:
-                            selling = float(row[8]) if len(row) > 8 and row[8] else 0
+                            selling = float(selling_val) if selling_val is not None else 0
                         except:
                             selling = 0
                         
+                        # Optional
+                        manufacturer = str(row[col_map["manufacturer"]]).strip() if "manufacturer" in col_map and row[col_map["manufacturer"]] else ""
+                        expiry = row[col_map["expiry_date"]] if "expiry_date" in col_map else ""
+                        if expiry and isinstance(expiry, datetime):
+                            expiry = expiry.strftime('%Y-%m-%d')
+                        elif expiry:
+                            expiry = str(expiry).strip()
+                        else:
+                            expiry = ""
+                        
+                        purchase_val = row[col_map["purchase_price"]] if "purchase_price" in col_map else 0
                         try:
-                            min_stock = int(float(row[9])) if len(row) > 9 and row[9] else 10
+                            purchase = float(purchase_val) if purchase_val is not None else 0
+                        except:
+                            purchase = 0
+                        
+                        min_stock_val = row[col_map["min_stock"]] if "min_stock" in col_map else 10
+                        try:
+                            min_stock = int(float(min_stock_val)) if min_stock_val is not None else 10
                         except:
                             min_stock = 10
                         
-                        location = str(row[10]) if len(row) > 10 and row[10] else ""
+                        location = str(row[col_map["location"]]).strip() if "location" in col_map and row[col_map["location"]] else ""
                         
                         # Check if exists
-                        cursor.execute('SELECT id, quantity FROM medicines WHERE name = ? AND batch_number = ?',
-                                     (name, batch))
+                        cursor.execute('''
+                            SELECT id, quantity FROM medicines 
+                            WHERE name = ? AND category = ? AND batch_number = ?
+                        ''', (name, category, batch))
                         existing = cursor.fetchone()
                         
                         if existing:
-                            new_qty = existing[1] + qty
+                            med_id, old_qty = existing
+                            new_qty = old_qty + qty
                             cursor.execute('''
-                                UPDATE medicines SET quantity = ?, purchase_price = ?,
-                                selling_price = ?, expiry_date = ?, location = ?
+                                UPDATE medicines SET
+                                    manufacturer = ?,
+                                    expiry_date = ?,
+                                    quantity = ?,
+                                    purchase_price = ?,
+                                    selling_price = ?,
+                                    min_stock = ?,
+                                    location = ?
                                 WHERE id = ?
-                            ''', (new_qty, purchase, selling, expiry, location, existing[0]))
+                            ''', (manufacturer, expiry, new_qty, purchase, selling, min_stock, location, med_id))
+                            
+                            if qty > 0:
+                                cursor.execute('''
+                                    INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                                    VALUES (?, ?, 'adjustment', ?, ?, ?, ?)
+                                ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), qty, old_qty, new_qty, f"Import adjustment (+{qty})"))
                             update_count += 1
                         else:
                             cursor.execute('''
-                                INSERT INTO medicines (name, category, manufacturer, batch_number,
-                                expiry_date, quantity, purchase_price, selling_price, min_stock, location, date_added)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                INSERT INTO medicines (
+                                    name, category, manufacturer, batch_number, expiry_date,
+                                    quantity, purchase_price, selling_price, min_stock, location, date_added
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ''', (name, category, manufacturer, batch, expiry, qty, purchase,
-                                 selling, min_stock, location, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                                selling, min_stock, location, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+                            med_id = cursor.lastrowid
+                            
+                            if qty > 0:
+                                cursor.execute('''
+                                    INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, notes)
+                                    VALUES (?, ?, 'purchase', ?, 0, ?, ?)
+                                ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), qty, qty, "Initial stock from import"))
                             import_count += 1
                             
                     except Exception as e:
                         skip_count += 1
+                        error_rows.append(f"Row {row_num}: {str(e)}")
                         continue
             
-            conn.commit()
+            else:
+                messagebox.showerror("Error", "Unsupported file type")
+                return
             
-            # Get total
+            # Commit all changes
+            conn.commit()
             cursor.execute('SELECT COUNT(*) FROM medicines')
             total = cursor.fetchone()[0]
             conn.close()
             
             self.load_medicines()
             
-            messagebox.showinfo("✅ Import Complete",
-                              f"File: {os.path.basename(filename)}\n\n"
-                              f"Results:\n"
-                              f"• New: {import_count}\n"
-                              f"• Updated: {update_count}\n"
-                              f"• Skipped: {skip_count}\n"
-                              f"• Total now: {total}\n\n"
-                              f"Copy saved to:\n{import_copy}")
+            # Build result message
+            message = f"✅ IMPORT COMPLETE\n\n"
+            message += f"File: {os.path.basename(filename)}\n"
+            message += f"New medicines added: {import_count}\n"
+            message += f"Existing medicines updated: {update_count}\n"
+            message += f"Rows skipped: {skip_count}\n"
+            message += f"Total medicines now: {total}\n\n"
+            if error_rows:
+                message += f"Errors (first 5):\n" + "\n".join(error_rows[:5]) + "\n\n"
+            message += f"Copy saved to:\n{import_copy}"
+            
+            messagebox.showinfo("Import Results", message)
             
         except Exception as e:
-            messagebox.showerror("Error", f"Import failed:\n{str(e)}")
-    
+            messagebox.showerror("Import Error", f"Failed to import:\n{str(e)}")
     # ========== ADVANCED DATABASE ANALYSIS ==========
     
     def test_database_contents(self):
