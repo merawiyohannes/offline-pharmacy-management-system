@@ -17,6 +17,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
+import sys
 
 class PharmacyApp:
     def __init__(self, root):
@@ -145,8 +146,7 @@ class PharmacyApp:
         return os.path.join(self.get_app_data_dir(), 'pharmacy.db')
     
     def get_license_path(self):
-        """Get license file path"""
-        return os.path.join(self.get_app_data_dir(), 'license.key')
+        return os.path.join(self.get_app_data_dir(), 'license.json')
     
     def get_backups_dir(self):
         """Get the backups directory"""
@@ -197,20 +197,35 @@ class PharmacyApp:
     # ========== LICENSE MANAGEMENT ==========
     
     def check_license(self):
-        """Professional license check"""
         license_file = self.get_license_path()
         
-        # If license file exists, app is activated
-        if os.path.exists(license_file):
+        if not os.path.exists(license_file):
+            return self.show_trial_or_purchase_dialog()
+        
+        # Load license data
+        with open(license_file, 'r') as f:
+            license_data = json.load(f)
+        
+        # Paid license -> always OK
+        if license_data.get('type') == 'paid':
             return True
         
-        # No license - show purchase dialog
-        # Don't hide anything yet
-        result = self.show_purchase_dialog()
-        return result
+        # Trial license -> check age
+        if license_data.get('type') == 'trial':
+            install_date = datetime.strptime(license_data['install_date'], '%Y-%m-%d').date()
+            days_used = (datetime.now().date() - install_date).days
+            if days_used < 30:
+                return True
+            else:
+                # Trial expired : delete license file
+                os.remove(license_file)
+                return self.show_trial_or_purchase_dialog()
+        
+        # Unknown type -> ask again
+        return self.show_trial_or_purchase_dialog()
 
-    def show_purchase_dialog(self):
-        """Professional purchase dialog with scrollbar"""
+    def show_trial_or_purchase_dialog(self):
+        """Professional purchase dialog with scrollbar + trial option"""
         # Create dialog
         dialog = tk.Toplevel(self.root)
         dialog.title("License Activation")
@@ -344,8 +359,10 @@ class PharmacyApp:
             expected_key = self.generate_license_key(computer_id)
             
             if key == expected_key:
+                # Store as paid license (JSON format)
+                license_data = {"type": "paid"}
                 with open(self.get_license_path(), 'w') as f:
-                    f.write("activated")
+                    json.dump(license_data, f)
                 messagebox.showinfo("✅ Success", "License activated successfully!\n\nYour data is stored in:\n" + self.get_app_data_dir())
                 activated.set(True)
                 dialog.destroy()
@@ -358,7 +375,51 @@ class PharmacyApp:
             dialog.destroy()
             activated.set(False)
         
-        # Buttons
+        def start_trial():
+            # 1) Check if trial was already used on this PC (simple flag file)
+            trial_flag = os.path.join(self.get_app_data_dir(), '.trial_used')
+            if os.path.exists(trial_flag):
+                with open(trial_flag, 'r') as f:
+                    stored_id = f.read().strip()
+                if stored_id == computer_id:   # computer_id is already defined above
+                    messagebox.showerror(
+                        "Trial Unavailable",
+                        "Free trial already used on this computer.\n"
+                        "Please purchase a license (use Activate button)."
+                    )
+                    return
+
+            # 2) Validate the license key (same as Activate button)
+            key = key_entry.get().strip().upper()
+            expected_key = self.generate_license_key(computer_id)
+            if key != expected_key:
+                messagebox.showerror("❌ Error", "Invalid license key.")
+                key_entry.delete(0, tk.END)
+                key_entry.focus_set()
+                return
+
+            # 3) Store trial license with timestamp
+            trial_data = {
+                "type": "trial",
+                "install_date": datetime.now().strftime("%Y-%m-%d")
+            }
+            with open(self.get_license_path(), 'w') as f:
+                json.dump(trial_data, f)
+
+            # 4) Mark trial as used (so user cannot start another trial later)
+            with open(trial_flag, 'w') as f:
+                f.write(computer_id)
+
+            messagebox.showinfo(
+                "Trial Started",
+                "30-day free trial activated! App will now restart.\n"
+                "After 30 days the license will expire and you will need to Activate."
+            )
+            dialog.destroy()
+            self.root.destroy()
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        
+        # Buttons frame
         btn_frame = tk.Frame(main_frame, bg='white')
         btn_frame.pack(fill='x', pady=15)
         
@@ -370,6 +431,11 @@ class PharmacyApp:
                 font=('Segoe UI', 10), padx=20, pady=8, relief='flat',
                 command=close_dialog).pack(side='left', padx=5)
         
+        # NEW: Trial button
+        tk.Button(btn_frame, text="Start 30-Day Free Trial", bg='#27ae60', fg='white',
+                font=('Segoe UI', 10), padx=20, pady=8, relief='flat',
+                command=start_trial).pack(side='left', padx=5)
+        
         # Handle window close button
         dialog.protocol("WM_DELETE_WINDOW", close_dialog)
         
@@ -377,7 +443,7 @@ class PharmacyApp:
         self.root.wait_window(dialog)
         
         return activated.get()
-    
+
     def get_pc_fingerprint(self):
         """Get unique computer ID"""
         fingerprint = str(uuid.getnode())
