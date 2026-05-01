@@ -455,10 +455,500 @@ class PharmacyApp:
         combined = computer_id + secret
         key = hashlib.md5(combined.encode()).hexdigest()[:16].upper()
         return f"{key[:4]}-{key[4:8]}-{key[8:12]}-{key[12:16]}"
-    
-   
+
+
     # ========== DATABASE MANAGEMENT ==========
     
+    def view_invoice_details(self, invoice_id):
+        messagebox.showinfo("Coming Soon", "Payment recording will be implemented next.")
+    
+    def show_invoice_analysis(self):
+        """Invoice management window – uses SQL for overdue detection (consistent with alerts)"""
+        import datetime
+        
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        
+        # Get all invoices
+        cursor.execute('''
+            SELECT id, invoice_number, customer_name, total, amount_paid, due_date, status 
+            FROM invoices 
+            ORDER BY date_issued DESC
+        ''')
+        all_invoices = cursor.fetchall()
+        
+        # Get the set of overdue invoice IDs (same SQL as check_alerts)
+        cursor.execute('''
+            SELECT id FROM invoices 
+            WHERE status IN ('Pending', 'Partial') AND due_date < date('now')
+        ''')
+        overdue_ids = {row[0] for row in cursor.fetchall()}
+        
+        conn.close()
+        
+        # Calculate totals
+        total_outstanding = 0
+        total_overdue = 0
+        total_paid = 0
+        for inv in all_invoices:
+            inv_id, _, _, total, paid, _, status = inv
+            if status in ('Pending', 'Partial'):
+                due = total - paid
+                total_outstanding += due
+                if inv_id in overdue_ids:
+                    total_overdue += due
+            total_paid += paid
+        
+        # ----- GUI -----
+        win = tk.Toplevel(self.root)
+        win.title("📊 Invoice Analysis")
+        win.geometry("1000x700")
+        win.transient(self.root)
+        
+        # Summary bar
+        summary = tk.Frame(win, bg='#2c3e50', padx=20, pady=15)
+        summary.pack(fill='x')
+        tk.Label(summary, text="Total Outstanding:", bg='#2c3e50', fg='white', font=('Segoe UI', 11)).pack(side='left', padx=15)
+        tk.Label(summary, text=f"{total_outstanding:,.2f} Birr", bg='#2c3e50', fg='#f1c40f', font=('Segoe UI', 13, 'bold')).pack(side='left', padx=5)
+        tk.Label(summary, text="Overdue:", bg='#2c3e50', fg='white', font=('Segoe UI', 11)).pack(side='left', padx=15)
+        tk.Label(summary, text=f"{total_overdue:,.2f} Birr", bg='#2c3e50', fg='#e74c3c', font=('Segoe UI', 13, 'bold')).pack(side='left', padx=5)
+        tk.Label(summary, text="Total Paid:", bg='#2c3e50', fg='white', font=('Segoe UI', 11)).pack(side='left', padx=15)
+        tk.Label(summary, text=f"{total_paid:,.2f} Birr", bg='#2c3e50', fg='#2ecc71', font=('Segoe UI', 13, 'bold')).pack(side='left', padx=5)
+        
+        # Filter row
+        filter_frame = tk.Frame(win, bg='#ecf0f1', padx=10, pady=5)
+        filter_frame.pack(fill='x')
+        show_overdue_only = tk.BooleanVar(value=False)
+        
+        # Treeview
+        tree_frame = tk.Frame(win)
+        tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        columns = ('ID', 'Invoice #', 'Customer', 'Total', 'Paid', 'Due Date', 'Status')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=18)
+        widths = [50, 120, 220, 100, 100, 100, 100]
+        for i, col in enumerate(columns):
+            tree.heading(col, text=col)
+            tree.column(col, width=widths[i])
+        
+        # Color tags
+        tree.tag_configure('Pending', background='#fff3cd')
+        tree.tag_configure('Partial', background='#ffe6b3')
+        tree.tag_configure('Paid', background='#d4edda')
+        tree.tag_configure('Overdue', background='#f8d7da')
+        
+        scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+        
+        def refresh_tree():
+            for item in tree.get_children():
+                tree.delete(item)
+            for inv in all_invoices:
+                inv_id = inv[0]
+                is_overdue = inv_id in overdue_ids
+                if show_overdue_only.get() and not is_overdue:
+                    continue
+                tag = 'Overdue' if is_overdue else inv[6]
+                tree.insert('', 'end', values=inv, tags=(tag,))
+        
+        # Filter checkbox
+        tk.Checkbutton(filter_frame, text="Show only overdue invoices", variable=show_overdue_only,
+                    command=refresh_tree, bg='#ecf0f1', font=('Segoe UI', 10)).pack(side='left')
+        tk.Label(filter_frame, text=f"({len(overdue_ids)} overdue)", bg='#ecf0f1', fg='#e74c3c',
+                font=('Segoe UI', 9, 'bold')).pack(side='left', padx=10)
+        
+        # Buttons
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(side='bottom', pady=10)
+        
+        def view_invoice():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showwarning("Select Invoice", "Please select an invoice.")
+                return
+            inv_id = tree.item(sel[0])['values'][0]
+            # Placeholder – implement payment dialog later
+            messagebox.showinfo("Coming Soon", f"Invoice {inv_id} details & payment recording will be added next.")
+        
+        def reprint_invoice():
+            sel = tree.selection()
+            if not sel:
+                messagebox.showwarning("Select Invoice", "Please select an invoice.")
+                return
+            inv_id = tree.item(sel[0])['values'][0]
+            self._reprint_invoice_by_id(inv_id)
+        
+        tk.Button(btn_frame, text="View / Pay", command=view_invoice, bg='#3498db', fg='white', padx=15, pady=5).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Reprint Invoice", command=reprint_invoice, bg='#e67e22', fg='white', padx=15, pady=5).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Refresh", command=lambda: [win.destroy(), self.show_invoice_analysis()], bg='#2c3e50', fg='white', padx=15, pady=5).pack(side='left', padx=5)
+        tk.Button(btn_frame, text="Close", command=win.destroy, bg='#95a5a6', fg='white', padx=15, pady=5).pack(side='left', padx=5)
+        
+        refresh_tree()
+                    
+    def print_invoice_pdf(self, pdf_data):
+        """Print invoice PDF directly (same layout as save)"""
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            import tempfile
+            import subprocess
+            import platform
+            
+            # Create temporary PDF
+            fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+            os.close(fd)
+            
+            doc = SimpleDocTemplate(temp_path, pagesize=A4,
+                                rightMargin=72, leftMargin=72,
+                                topMargin=72, bottomMargin=18)
+            
+            styles = getSampleStyleSheet()
+            story = []
+            
+            # Header
+            header_style = ParagraphStyle('CustomHeader', parent=styles['Heading1'],
+                                        fontSize=16, textColor=colors.HexColor('#2c3e50'),
+                                        spaceAfter=10, alignment=1)
+            story.append(Paragraph("MERawi PHARMACY PRO", header_style))
+            story.append(Paragraph("TAX INVOICE", styles['Heading2']))
+            story.append(Spacer(1, 12))
+            
+            # Invoice details
+            info_style = ParagraphStyle('Info', parent=styles['Normal'], fontSize=10, spaceAfter=4)
+            story.append(Paragraph(f"Invoice No: {pdf_data['invoice_no']}", info_style))
+            story.append(Paragraph(f"Date: {pdf_data['date']}", info_style))
+            story.append(Paragraph(f"Customer: {pdf_data['customer_name']}", info_style))
+            if pdf_data.get('customer_phone'):
+                story.append(Paragraph(f"Phone: {pdf_data['customer_phone']}", info_style))
+            if pdf_data.get('customer_address'):
+                story.append(Paragraph(f"Address: {pdf_data['customer_address']}", info_style))
+            story.append(Paragraph(f"Due Date: {pdf_data['due_date']}", info_style))
+            story.append(Spacer(1, 12))
+            
+            # TIN information
+            if pdf_data.get('business_tin') or pdf_data.get('customer_tin'):
+                tin_style = ParagraphStyle('TIN', parent=styles['Normal'], fontSize=9, alignment=0)
+                if pdf_data.get('business_tin'):
+                    story.append(Paragraph(f"Business TIN: {pdf_data['business_tin']}", tin_style))
+                if pdf_data.get('customer_tin'):
+                    story.append(Paragraph(f"Customer TIN: {pdf_data['customer_tin']}", tin_style))
+                story.append(Spacer(1, 10))
+            
+            # Items table
+            data = [['Item', 'Qty', 'Price (Birr)', 'Total (Birr)']]
+            for item in pdf_data['items']:
+                data.append([
+                    item['name'][:40],
+                    str(item['qty']),
+                    f"{item['price']:.2f}",
+                    f"{item['total']:.2f}"
+                ])
+            
+            table = Table(data, colWidths=[3.2*inch, 0.8*inch, 1*inch, 1.2*inch])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('ALIGN', (0,0), (0,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 12))
+            
+            # Totals
+            total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=11, alignment=2)
+            story.append(Paragraph(f"Subtotal: {pdf_data['subtotal']:.2f} Birr", total_style))
+            story.append(Paragraph(f"VAT ({pdf_data['tax_rate']}%): {pdf_data['tax_amount']:.2f} Birr", total_style))
+            story.append(Paragraph(f"<b>TOTAL: {pdf_data['total']:.2f} Birr</b>", total_style))
+            story.append(Spacer(1, 20))
+            
+            # Footer
+            footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, alignment=1, textColor=colors.grey)
+            story.append(Paragraph("Thank you for your business!", footer_style))
+            story.append(Paragraph("MERawi Yohannes | 0921-540-245 | merawiyohannes@gmail.com", footer_style))
+            
+            doc.build(story)
+            
+            # Send to printer
+            if platform.system() == "Windows":
+                os.startfile(temp_path, "print")
+            elif platform.system() == "Darwin":
+                subprocess.run(['lp', temp_path])
+            else:
+                subprocess.run(['lp', temp_path])
+            
+            messagebox.showinfo("Print", "Invoice sent to printer.")
+            
+            # Delete temp file after 5 seconds
+            self.root.after(5000, lambda: os.unlink(temp_path) if os.path.exists(temp_path) else None)
+            
+        except ImportError:
+            messagebox.showwarning("PDF Library Missing", "ReportLab not installed.\nRun: pip install reportlab")
+        except Exception as e:
+            messagebox.showerror("Print Error", f"Could not print: {str(e)}")
+                
+    def save_invoice_pdf(self, pdf_data):
+        """Save invoice as PDF file (includes TIN if present)"""
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.lib.units import inch
+            
+            receipts_dir = self.get_receipts_dir()
+            filename = f"invoice_{pdf_data['invoice_no']}.pdf"
+            filepath = os.path.join(receipts_dir, filename)
+            
+            doc = SimpleDocTemplate(filepath, pagesize=A4,
+                                rightMargin=72, leftMargin=72,
+                                topMargin=72, bottomMargin=18)
+            
+            styles = getSampleStyleSheet()
+            story = []
+            
+            # Header
+            header_style = ParagraphStyle('CustomHeader', parent=styles['Heading1'],
+                                        fontSize=16, textColor=colors.HexColor('#2c3e50'),
+                                        spaceAfter=10, alignment=1)
+            story.append(Paragraph("MERawi PHARMACY PRO", header_style))
+            story.append(Paragraph("TAX INVOICE", styles['Heading2']))
+            story.append(Spacer(1, 12))
+            
+            # Invoice details
+            info_style = ParagraphStyle('Info', parent=styles['Normal'], fontSize=10, spaceAfter=4)
+            story.append(Paragraph(f"Invoice No: {pdf_data['invoice_no']}", info_style))
+            story.append(Paragraph(f"Date: {pdf_data['date']}", info_style))
+            story.append(Paragraph(f"Customer: {pdf_data['customer_name']}", info_style))
+            if pdf_data.get('customer_phone'):
+                story.append(Paragraph(f"Phone: {pdf_data['customer_phone']}", info_style))
+            if pdf_data.get('customer_address'):
+                story.append(Paragraph(f"Address: {pdf_data['customer_address']}", info_style))
+            story.append(Paragraph(f"Due Date: {pdf_data['due_date']}", info_style))
+            story.append(Spacer(1, 12))
+            
+            # TIN information (if present)
+            if pdf_data.get('business_tin') or pdf_data.get('customer_tin'):
+                tin_style = ParagraphStyle('TIN', parent=styles['Normal'], fontSize=9, alignment=0)
+                if pdf_data.get('business_tin'):
+                    story.append(Paragraph(f"Business TIN: {pdf_data['business_tin']}", tin_style))
+                if pdf_data.get('customer_tin'):
+                    story.append(Paragraph(f"Customer TIN: {pdf_data['customer_tin']}", tin_style))
+                story.append(Spacer(1, 10))
+            
+            # Items table
+            data = [['Item', 'Qty', 'Price (Birr)', 'Total (Birr)']]
+            for item in pdf_data['items']:
+                data.append([
+                    item['name'][:40],
+                    str(item['qty']),
+                    f"{item['price']:.2f}",
+                    f"{item['total']:.2f}"
+                ])
+            
+            table = Table(data, colWidths=[3.2*inch, 0.8*inch, 1*inch, 1.2*inch])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2c3e50')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('ALIGN', (0,0), (0,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0,0), (-1,-1), 9),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ]))
+            story.append(table)
+            story.append(Spacer(1, 12))
+            
+            # Totals
+            total_style = ParagraphStyle('Total', parent=styles['Normal'], fontSize=11, alignment=2)
+            story.append(Paragraph(f"Subtotal: {pdf_data['subtotal']:.2f} Birr", total_style))
+            story.append(Paragraph(f"VAT ({pdf_data['tax_rate']}%): {pdf_data['tax_amount']:.2f} Birr", total_style))
+            story.append(Paragraph(f"<b>TOTAL: {pdf_data['total']:.2f} Birr</b>", total_style))
+            story.append(Spacer(1, 20))
+            
+            # Footer
+            footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, alignment=1, textColor=colors.grey)
+            story.append(Paragraph("Thank you for your business!", footer_style))
+            story.append(Paragraph("MERawi Yohannes | 0921-540-245 | merawiyohannes@gmail.com", footer_style))
+            
+            doc.build(story)
+            
+            messagebox.showinfo("✅ Invoice Saved", f"Invoice saved as PDF:\n{filepath}")
+            
+            if messagebox.askyesno("Open Folder", "Open invoices folder?"):
+                if platform.system() == "Windows":
+                    os.startfile(receipts_dir)
+                else:
+                    os.system(f'open "{receipts_dir}"')
+                    
+        except ImportError:
+            messagebox.showwarning("PDF Library Missing", "ReportLab not installed.\nRun: pip install reportlab")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not save invoice PDF: {str(e)}")
+            
+    def create_invoice(self):
+        """Create invoice – auto‑save PDF, then ask to print"""
+        if not self.bill_items:
+            messagebox.showwarning("Warning", "No items to invoice")
+            return False
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Customer Information")
+        dialog.geometry("450x450")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Invoice Customer Details", font=('Segoe UI', 12, 'bold')).pack(pady=10)
+        
+        frame = tk.Frame(dialog)
+        frame.pack(padx=20, pady=5)
+        
+        row = 0
+        tk.Label(frame, text="Name:*").grid(row=row, column=0, sticky='w', pady=5)
+        name_entry = tk.Entry(frame, width=35)
+        name_entry.grid(row=row, column=1, pady=5)
+        row += 1
+        
+        tk.Label(frame, text="Phone:").grid(row=row, column=0, sticky='w', pady=5)
+        phone_entry = tk.Entry(frame, width=35)
+        phone_entry.grid(row=row, column=1, pady=5)
+        row += 1
+        
+        tk.Label(frame, text="Address:").grid(row=row, column=0, sticky='w', pady=5)
+        addr_entry = tk.Entry(frame, width=35)
+        addr_entry.grid(row=row, column=1, pady=5)
+        row += 1
+        
+        # TIN fields if government mode
+        customer_tin_entry = None
+        if self.government_mode:
+            tk.Label(frame, text="Business TIN:").grid(row=row, column=0, sticky='w', pady=5)
+            biz_tin_var = tk.StringVar(value=self.business_tin)
+            biz_tin_display = tk.Entry(frame, width=35, textvariable=biz_tin_var, state='readonly')
+            biz_tin_display.grid(row=row, column=1, pady=5)
+            row += 1
+            
+            tk.Label(frame, text="Customer TIN (optional):").grid(row=row, column=0, sticky='w', pady=5)
+            customer_tin_entry = tk.Entry(frame, width=35)
+            customer_tin_entry.grid(row=row, column=1, pady=5)
+            row += 1
+        
+        tk.Label(frame, text="Due Date (YYYY-MM-DD):").grid(row=row, column=0, sticky='w', pady=5)
+        due_entry = tk.Entry(frame, width=35)
+        due_entry.insert(0, (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d'))
+        due_entry.grid(row=row, column=1, pady=5)
+        
+        customer_data = {}
+        
+        def confirm():
+            if not name_entry.get().strip():
+                messagebox.showerror("Error", "Customer name is required")
+                return
+            customer_data['name'] = name_entry.get().strip()
+            customer_data['phone'] = phone_entry.get().strip()
+            customer_data['address'] = addr_entry.get().strip()
+            customer_data['due_date'] = due_entry.get().strip()
+            if self.government_mode and customer_tin_entry:
+                customer_data['business_tin'] = self.business_tin
+                customer_data['customer_tin'] = customer_tin_entry.get().strip()
+            else:
+                customer_data['business_tin'] = ''
+                customer_data['customer_tin'] = ''
+            dialog.destroy()
+        
+        tk.Button(dialog, text="Create Invoice", bg='#27ae60', fg='white', command=confirm).pack(pady=20)
+        dialog.wait_window()
+        
+        if not customer_data:
+            return False
+        
+        # Calculate totals
+        subtotal = sum(item['total'] for item in self.bill_items)
+        tax_rate = float(self.tax_var.get())
+        tax_amount = subtotal * (tax_rate/100)
+        total = subtotal + tax_amount
+        invoice_no = f"INV-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        
+        try:
+            conn = sqlite3.connect(self.get_database_path())
+            cursor = conn.cursor()
+            
+            # Build notes field for TINs
+            notes = ""
+            if customer_data.get('business_tin'):
+                notes += f"Business TIN: {customer_data['business_tin']}\n"
+            if customer_data.get('customer_tin'):
+                notes += f"Customer TIN: {customer_data['customer_tin']}"
+            
+            cursor.execute('''
+                INSERT INTO invoices (invoice_number, customer_name, customer_phone, customer_address,
+                                    date_issued, due_date, subtotal, tax_rate, tax_amount, total, status, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+            ''', (invoice_no, customer_data['name'], customer_data['phone'], customer_data['address'],
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'), customer_data['due_date'],
+                subtotal, tax_rate, tax_amount, total, notes.strip()))
+            
+            invoice_id = cursor.lastrowid
+            
+            for item in self.bill_items:
+                cursor.execute('SELECT quantity FROM medicines WHERE id = ?', (item['id'],))
+                old_qty = cursor.fetchone()[0]
+                new_qty = old_qty - item['qty']
+                cursor.execute('UPDATE medicines SET quantity = ? WHERE id = ?', (new_qty, item['id']))
+                cursor.execute('''
+                    INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, reference)
+                    VALUES (?, ?, 'invoice', ?, ?, ?, ?)
+                ''', (item['id'], datetime.now().strftime('%Y-%m-%d %H:%M:%S'), -item['qty'], old_qty, new_qty, f"Invoice {invoice_no}"))
+                cursor.execute('''
+                    INSERT INTO invoice_items (invoice_id, medicine_id, medicine_name, quantity, price_per_unit, total)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (invoice_id, item['id'], item['name'], item['qty'], item['price'], item['total']))
+            
+            conn.commit()
+            conn.close()
+            
+            # Prepare PDF data
+            pdf_data = {
+                'invoice_no': invoice_no,
+                'date': datetime.now().strftime('%Y-%m-%d %H:%M'),
+                'customer_name': customer_data['name'],
+                'customer_phone': customer_data['phone'],
+                'customer_address': customer_data['address'],
+                'due_date': customer_data['due_date'],
+                'items': self.bill_items[:],
+                'subtotal': subtotal,
+                'tax_rate': tax_rate,
+                'tax_amount': tax_amount,
+                'total': total,
+                'business_tin': customer_data.get('business_tin', ''),
+                'customer_tin': customer_data.get('customer_tin', '')
+            }
+            
+            # Always save PDF automatically
+            self.save_invoice_pdf(pdf_data)
+            
+            # Ask to print
+            if messagebox.askyesno("Invoice Created", 
+                                f"Invoice {invoice_no} saved.\nTotal: {total:.2f} Birr\nDue: {customer_data['due_date']}\n\nPrint invoice?"):
+                self.print_invoice_pdf(pdf_data)
+            
+            self.clear_bill()
+            self.load_medicines()
+            return True
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed: {str(e)}")
+            return False
+                
     def create_database(self):
         """Create SQLite database and tables if they don't exist"""
         try:
@@ -528,6 +1018,56 @@ class PharmacyApp:
                 )
             ''')
             
+            # Invoices table (credit sales)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS invoices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invoice_number TEXT UNIQUE NOT NULL,
+                    customer_name TEXT,
+                    customer_phone TEXT,
+                    customer_address TEXT,
+                    date_issued TEXT NOT NULL,
+                    due_date TEXT NOT NULL,
+                    subtotal REAL NOT NULL,
+                    tax_rate REAL DEFAULT 15,
+                    tax_amount REAL DEFAULT 0,
+                    total REAL NOT NULL,
+                    amount_paid REAL DEFAULT 0,
+                    status TEXT DEFAULT 'Pending',  -- Pending, Partial, Paid, Overdue, Cancelled
+                    notes TEXT,
+                    created_by TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Invoice items (products sold in each invoice)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS invoice_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invoice_id INTEGER NOT NULL,
+                    medicine_id INTEGER NOT NULL,
+                    medicine_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    price_per_unit REAL NOT NULL,
+                    total REAL NOT NULL,
+                    FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE,
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(id)
+                )
+            ''')
+
+            # Payments received for invoices
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS invoice_payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    invoice_id INTEGER NOT NULL,
+                    amount REAL NOT NULL,
+                    payment_date TEXT NOT NULL,
+                    payment_method TEXT,
+                    reference TEXT,
+                    FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
+                )
+            ''')
+            
             conn.commit()
             conn.close()
             
@@ -592,6 +1132,7 @@ class PharmacyApp:
         reports_menu.add_command(label="⚠️ Low Stock Report", command=self.low_stock_report)
         reports_menu.add_command(label="⏰ Expiring Medicines", command=self.expiring_report)
         reports_menu.add_command(label="💰 Today's Sales", command=self.today_sales_report)
+        reports_menu.add_command(label="📊 Invoice Analysis", command=self.show_invoice_analysis)
         
         # Settings menu
         settings_menu = tk.Menu(menubar, tearoff=0)
@@ -1670,7 +2211,8 @@ class PharmacyApp:
         complete_text = "✅ Complete Sale" if not self.government_mode else "✅ Issue Fiscal Receipt"
         tk.Button(btn_frame, text=complete_text, bg='#27ae60', fg='white',
                 font=('Segoe UI', 10, 'bold'), padx=15, command=self.complete_sale).pack(side='right', padx=2)
-
+        tk.Button(btn_frame, text="📄 Credit Invoice", bg='#3498db', fg='white',
+          font=('Segoe UI', 9, 'bold'), padx=10, command=self.create_invoice).pack(side='right', padx=2)
         self.bill_items = []
     
     def search_sale_medicines(self, event=None):
@@ -2033,6 +2575,57 @@ class PharmacyApp:
             messagebox.showerror("Print Error", f"Could not print: {str(e)}")
     
     # ========== REPORTS TAB ==========
+    
+    def show_invoice_list(self):
+        """Window to manage all invoices"""
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, invoice_number, customer_name, total, amount_paid, due_date, status 
+            FROM invoices ORDER BY date_issued DESC
+        ''')
+        invoices = cursor.fetchall()
+        conn.close()
+        
+        win = tk.Toplevel(self.root)
+        win.title("Invoice Management")
+        win.geometry("900x500")
+        
+        tree = ttk.Treeview(win, columns=('ID', 'Number', 'Customer', 'Total', 'Paid', 'Due', 'Status'), show='headings')
+        for col in ('ID', 'Number', 'Customer', 'Total', 'Paid', 'Due', 'Status'):
+            tree.heading(col, text=col)
+            tree.column(col, width=100)
+        tree.column('Customer', width=200)
+        tree.pack(fill='both', expand=True)
+        
+        for inv in invoices:
+            tree.insert('', 'end', values=inv)
+        
+        def view_invoice():
+            sel = tree.selection()
+            if not sel: return
+            inv_id = tree.item(sel[0])['values'][0]
+            # Fetch full invoice details and show dialog with option to record payment or reprint
+            self.view_invoice_details(inv_id)
+        
+        tk.Button(win, text="View / Pay", command=view_invoice, bg='#3498db', fg='white').pack(pady=10)
+
+    def view_invoice_details(self, invoice_id):
+        """Show invoice details, allow payment recording and reprint"""
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM invoices WHERE id = ?', (invoice_id,))
+        inv = cursor.fetchone()
+        cursor.execute('SELECT medicine_name, quantity, price_per_unit, total FROM invoice_items WHERE invoice_id = ?', (invoice_id,))
+        items = cursor.fetchall()
+        conn.close()
+        
+        # Create dialog
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Invoice {inv[1]}")
+        dialog.geometry("600x500")
+    
+   
     
     def create_reports_tab(self):
         """Create reports tab"""
@@ -3207,7 +3800,7 @@ class PharmacyApp:
     # ========== ALERTS ==========
     
     def check_alerts(self):
-        """Check for alerts on startup"""
+        """Check for alerts on startup (low stock, expiring, overdue invoices)"""
         alerts = []
         
         try:
@@ -3236,14 +3829,24 @@ class PharmacyApp:
             if expiring > 0:
                 alerts.append(f"⏰ {expiring} medicines expiring soon")
             
+            # Overdue invoices (add this block)
+            cursor.execute('''
+                SELECT COUNT(*) FROM invoices 
+                WHERE status IN ('Pending', 'Partial') AND due_date < date('now')
+            ''')
+            overdue = cursor.fetchone()[0]
+            if overdue > 0:
+                alerts.append(f"📄 {overdue} overdue invoice(s)")
+            
             conn.close()
             
-        except:
+        except Exception as e:
+            # If invoices table doesn't exist yet, ignore
             pass
         
         if alerts:
             messagebox.showwarning("🔔 Alerts", "\n".join(alerts))
-    
+            
     def apply_settings(self):
         """Reload config, refresh sales tab, and reset dashboard authorization."""
         config = self.load_config()
