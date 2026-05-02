@@ -460,38 +460,245 @@ class PharmacyApp:
     # ========== DATABASE MANAGEMENT ==========
     
     def view_invoice_details(self, invoice_id):
-        messagebox.showinfo("Coming Soon", "Payment recording will be implemented next.")
+        """Display invoice details and allow payment recording (fully functional)"""
+        import datetime
+        
+        # ----- Fetch invoice data -----
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT invoice_number, customer_name, customer_phone, customer_address,
+                date_issued, due_date, subtotal, tax_rate, tax_amount, total, amount_paid, status, notes
+            FROM invoices WHERE id = ?
+        ''', (invoice_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            messagebox.showerror("Error", f"Invoice ID {invoice_id} not found")
+            return
+        
+        (inv_no, cust_name, cust_phone, cust_addr,
+        date_issued, due_date, subtotal, tax_rate, tax_amt, total, paid, status, notes) = row
+        remaining = total - paid
+        
+        # Fetch items
+        cursor.execute('''
+            SELECT medicine_name, quantity, price_per_unit, total
+            FROM invoice_items WHERE invoice_id = ?
+        ''', (invoice_id,))
+        items = cursor.fetchall()
+        conn.close()
+        
+        # ----- Build window -----
+        win = tk.Toplevel(self.root)
+        win.title(f"Invoice {inv_no} - Payment")
+        win.geometry("1050x650")
+        win.minsize(900, 500)
+        win.transient(self.root)
+        win.grab_set()
+        
+        # Use grid for main layout (two columns, expand equally)
+        win.grid_columnconfigure(0, weight=1)
+        win.grid_columnconfigure(1, weight=1)
+        win.grid_rowconfigure(0, weight=1)
+        
+        # LEFT PANEL (invoice details)
+        left = tk.Frame(win, bg='white', relief='groove', bd=1)
+        left.grid(row=0, column=0, sticky='nsew', padx=5, pady=5)
+        
+        # Scrollable area inside left
+        canvas = tk.Canvas(left, bg='white', highlightthickness=0)
+        scrollbar = tk.Scrollbar(left, orient='vertical', command=canvas.yview)
+        scrollable = tk.Frame(canvas, bg='white')
+        
+        scrollable.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=scrollable, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Title
+        tk.Label(scrollable, text="INVOICE DETAILS", font=('Segoe UI', 16, 'bold'), bg='white', fg='#2c3e50').pack(pady=10)
+        
+        # Details in grid inside scrollable
+        details_frame = tk.Frame(scrollable, bg='white')
+        details_frame.pack(fill='x', padx=20, pady=5)
+        
+        details = [
+            ("Invoice #:", inv_no),
+            ("Date Issued:", date_issued),
+            ("Due Date:", due_date),
+            ("Customer:", cust_name),
+            ("Phone:", cust_phone),
+            ("Address:", cust_addr or ''),
+            ("Status:", status),
+            ("Subtotal:", f"{subtotal:.2f} Birr"),
+            ("Tax Rate:", f"{tax_rate}%"),
+            ("Tax Amount:", f"{tax_amt:.2f} Birr"),
+            ("Total:", f"{total:.2f} Birr"),
+            ("Paid:", f"{paid:.2f} Birr"),
+            ("Remaining:", f"{remaining:.2f} Birr")
+        ]
+        
+        for i, (label, value) in enumerate(details):
+            tk.Label(details_frame, text=label, bg='white', font=('Segoe UI', 10, 'bold')).grid(row=i, column=0, sticky='w', pady=2, padx=(0,15))
+            tk.Label(details_frame, text=str(value), bg='white', font=('Segoe UI', 10)).grid(row=i, column=1, sticky='w', pady=2)
+        
+        # Items treeview
+        tk.Label(scrollable, text="Items Sold:", bg='white', font=('Segoe UI', 12, 'bold')).pack(anchor='w', padx=20, pady=(15,5))
+        tree_frame = tk.Frame(scrollable, bg='white')
+        tree_frame.pack(fill='both', expand=True, padx=20, pady=5)
+        
+        tree_items = ttk.Treeview(tree_frame, columns=('Item', 'Qty', 'Price', 'Total'), show='headings', height=6)
+        tree_items.heading('Item', text='Item')
+        tree_items.heading('Qty', text='Qty')
+        tree_items.heading('Price', text='Price (Birr)')
+        tree_items.heading('Total', text='Total (Birr)')
+        tree_items.column('Item', width=220)
+        tree_items.column('Qty', width=60)
+        tree_items.column('Price', width=90)
+        tree_items.column('Total', width=100)
+        
+        v_scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=tree_items.yview)
+        tree_items.configure(yscrollcommand=v_scroll.set)
+        tree_items.pack(side='left', fill='both', expand=True)
+        v_scroll.pack(side='right', fill='y')
+        
+        for it in items:
+            tree_items.insert('', 'end', values=it)
+        
+        # RIGHT PANEL (payment)
+        right = tk.Frame(win, bg='#ecf0f1', relief='groove', bd=1)
+        right.grid(row=0, column=1, sticky='nsew', padx=5, pady=5)
+        
+        tk.Label(right, text="RECORD PAYMENT", font=('Segoe UI', 16, 'bold'), bg='#ecf0f1', fg='#2c3e50').pack(pady=15)
+        
+        pay_frame = tk.Frame(right, bg='#ecf0f1')
+        pay_frame.pack(fill='x', padx=30, pady=10)
+        
+        # Amount
+        tk.Label(pay_frame, text="Amount (Birr):", bg='#ecf0f1', font=('Segoe UI', 11)).pack(anchor='w')
+        amount_entry = tk.Entry(pay_frame, font=('Segoe UI', 12), width=20)
+        amount_entry.pack(pady=5, anchor='w')
+        amount_entry.insert(0, f"{remaining:.2f}")
+        
+        # Payment method
+        tk.Label(pay_frame, text="Payment Method:", bg='#ecf0f1', font=('Segoe UI', 11)).pack(anchor='w', pady=(10,0))
+        method_var = tk.StringVar(value='Cash')
+        method_combo = ttk.Combobox(pay_frame, textvariable=method_var, values=['Cash', 'Card', 'Transfer', 'Other'], state='readonly', width=18)
+        method_combo.pack(pady=5, anchor='w')
+        
+        # Date
+        tk.Label(pay_frame, text="Payment Date:", bg='#ecf0f1', font=('Segoe UI', 11)).pack(anchor='w', pady=(10,0))
+        date_entry = tk.Entry(pay_frame, font=('Segoe UI', 10), width=20)
+        date_entry.insert(0, datetime.datetime.now().strftime('%Y-%m-%d'))
+        date_entry.pack(pady=5, anchor='w')
+        
+        # Reference
+        tk.Label(pay_frame, text="Reference (optional):", bg='#ecf0f1', font=('Segoe UI', 11)).pack(anchor='w', pady=(10,0))
+        note_entry = tk.Entry(pay_frame, font=('Segoe UI', 10), width=25)
+        note_entry.pack(pady=5, anchor='w')
+        
+        # Record button
+        def record_payment():
+            try:
+                pay_amount = float(amount_entry.get())
+                if pay_amount <= 0:
+                    messagebox.showerror("Error", "Amount must be positive")
+                    return
+                if pay_amount > remaining + 0.01:
+                    messagebox.showerror("Error", f"Amount exceeds remaining balance ({remaining:.2f})")
+                    return
+            except:
+                messagebox.showerror("Error", "Invalid amount")
+                return
+            
+            new_paid = paid + pay_amount
+            new_status = 'Paid' if new_paid >= total - 0.01 else 'Partial'
+            payment_date = date_entry.get().strip()
+            payment_method = method_var.get()
+            ref = note_entry.get().strip()
+            
+            # Update database
+            conn2 = sqlite3.connect(self.get_database_path())
+            cur2 = conn2.cursor()
+            cur2.execute('UPDATE invoices SET amount_paid = ?, status = ? WHERE id = ?', (new_paid, new_status, invoice_id))
+            cur2.execute('''
+                INSERT INTO invoice_payments (invoice_id, amount, payment_date, payment_method, reference)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (invoice_id, pay_amount, payment_date, payment_method, ref))
+            # Append to notes
+            payment_log = f"\nPayment: {payment_date} | {pay_amount:.2f} Birr | {payment_method} | {ref}"
+            new_notes = (notes or '') + payment_log
+            cur2.execute('UPDATE invoices SET notes = ? WHERE id = ?', (new_notes.strip(), invoice_id))
+            conn2.commit()
+            conn2.close()
+            
+            messagebox.showinfo("Success", f"Payment recorded.\nNew status: {new_status}\nRemaining: {total - new_paid:.2f}")
+            
+            # Receipt printing
+            if messagebox.askyesno("Print Receipt", "Print payment receipt?"):
+                receipt_text = f"""
+    {"="*45}
+    MERAWI PHARMACY PRO
+    {"="*45}
+    PAYMENT RECEIPT
+    Invoice No: {inv_no}
+    Customer: {cust_name}
+    Date: {payment_date}
+    Amount Paid: {pay_amount:.2f} Birr
+    Method: {payment_method}
+    Status: {new_status}
+    Total Paid: {new_paid:.2f} Birr
+    Remaining: {total - new_paid:.2f} Birr
+    {"="*45}
+    Thank you!
+    """
+                if hasattr(self, 'print_receipt'):
+                    self.print_receipt(receipt_text)
+                else:
+                    # Fallback: show in messagebox (for testing)
+                    messagebox.showinfo("Receipt Preview", receipt_text)
+            
+            win.destroy()
+        
+        btn = tk.Button(right, text="RECORD PAYMENT", command=record_payment, bg='#27ae60', fg='white',
+                        font=('Segoe UI', 12, 'bold'), padx=25, pady=10, relief='flat')
+        btn.pack(pady=30)
+        
+        win.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox('all'))
     
     def show_invoice_analysis(self):
-        """Invoice management window – uses SQL for overdue detection (consistent with alerts)"""
+        """Invoice management with search + overdue filter + color coding"""
         import datetime
         
         conn = sqlite3.connect(self.get_database_path())
         cursor = conn.cursor()
         
-        # Get all invoices
+        # All invoices (with all needed columns)
         cursor.execute('''
-            SELECT id, invoice_number, customer_name, total, amount_paid, due_date, status 
+            SELECT id, invoice_number, customer_name, customer_phone, total, amount_paid, due_date, status 
             FROM invoices 
             ORDER BY date_issued DESC
         ''')
         all_invoices = cursor.fetchall()
         
-        # Get the set of overdue invoice IDs (same SQL as check_alerts)
+        # Get overdue IDs using same SQL as check_alerts
         cursor.execute('''
             SELECT id FROM invoices 
             WHERE status IN ('Pending', 'Partial') AND due_date < date('now')
         ''')
         overdue_ids = {row[0] for row in cursor.fetchall()}
-        
         conn.close()
         
-        # Calculate totals
+        # ----- Calculate totals (over all invoices, not filtered) -----
         total_outstanding = 0
         total_overdue = 0
         total_paid = 0
         for inv in all_invoices:
-            inv_id, _, _, total, paid, _, status = inv
+            inv_id, _, _, _, total, paid, _, status = inv
             if status in ('Pending', 'Partial'):
                 due = total - paid
                 total_outstanding += due
@@ -502,7 +709,7 @@ class PharmacyApp:
         # ----- GUI -----
         win = tk.Toplevel(self.root)
         win.title("📊 Invoice Analysis")
-        win.geometry("1000x700")
+        win.geometry("1100x750")
         win.transient(self.root)
         
         # Summary bar
@@ -515,18 +722,39 @@ class PharmacyApp:
         tk.Label(summary, text="Total Paid:", bg='#2c3e50', fg='white', font=('Segoe UI', 11)).pack(side='left', padx=15)
         tk.Label(summary, text=f"{total_paid:,.2f} Birr", bg='#2c3e50', fg='#2ecc71', font=('Segoe UI', 13, 'bold')).pack(side='left', padx=5)
         
-        # Filter row
+        # Filter row (overdue checkbox + search)
         filter_frame = tk.Frame(win, bg='#ecf0f1', padx=10, pady=5)
         filter_frame.pack(fill='x')
-        show_overdue_only = tk.BooleanVar(value=False)
         
-        # Treeview
+        show_overdue_only = tk.BooleanVar(value=False)
+        search_var = tk.StringVar()
+        
+        # Search entry
+        tk.Label(filter_frame, text="Search:", bg='#ecf0f1', font=('Segoe UI', 10)).pack(side='left', padx=5)
+        search_entry = tk.Entry(filter_frame, textvariable=search_var, width=30, font=('Segoe UI', 10))
+        search_entry.pack(side='left', padx=5)
+        
+        # Clear search button
+        def clear_search():
+            search_var.set("")
+            search_entry.focus()
+        tk.Button(filter_frame, text="Clear", command=clear_search, bg='#95a5a6', fg='white', font=('Segoe UI', 9)).pack(side='left', padx=5)
+        
+        # Overdue checkbox
+        tk.Checkbutton(filter_frame, text="Show only overdue invoices", variable=show_overdue_only,
+                    bg='#ecf0f1', font=('Segoe UI', 10)).pack(side='left', padx=20)
+        overdue_count = len(overdue_ids)
+        tk.Label(filter_frame, text=f"({overdue_count} overdue)", bg='#ecf0f1', fg='#e74c3c',
+                font=('Segoe UI', 9, 'bold')).pack(side='left')
+        
+        # Treeview frame
         tree_frame = tk.Frame(win)
         tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        columns = ('ID', 'Invoice #', 'Customer', 'Total', 'Paid', 'Due Date', 'Status')
+        # Columns (added phone column for search transparency)
+        columns = ('ID', 'Invoice #', 'Customer', 'Phone', 'Total', 'Paid', 'Due Date', 'Status')
         tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=18)
-        widths = [50, 120, 220, 100, 100, 100, 100]
+        widths = [50, 120, 200, 100, 100, 100, 100, 100]
         for i, col in enumerate(columns):
             tree.heading(col, text=col)
             tree.column(col, width=widths[i])
@@ -542,24 +770,35 @@ class PharmacyApp:
         tree.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
         
+        # ----- Filter function (combines overdue + search) -----
         def refresh_tree():
             for item in tree.get_children():
                 tree.delete(item)
+            
+            search_text = search_var.get().strip().lower()
             for inv in all_invoices:
-                inv_id = inv[0]
+                inv_id, inv_num, cust_name, cust_phone, total, paid, due_date, status = inv
                 is_overdue = inv_id in overdue_ids
+                
+                # Filter by overdue checkbox
                 if show_overdue_only.get() and not is_overdue:
                     continue
-                tag = 'Overdue' if is_overdue else inv[6]
-                tree.insert('', 'end', values=inv, tags=(tag,))
+                
+                # Filter by search text (match invoice number, customer name, or phone)
+                if search_text:
+                    haystack = f"{inv_num} {cust_name} {cust_phone}".lower()
+                    if search_text not in haystack:
+                        continue
+                
+                tag = 'Overdue' if is_overdue else status
+                # Show all columns
+                tree.insert('', 'end', values=(inv_id, inv_num, cust_name, cust_phone, total, paid, due_date, status), tags=(tag,))
         
-        # Filter checkbox
-        tk.Checkbutton(filter_frame, text="Show only overdue invoices", variable=show_overdue_only,
-                    command=refresh_tree, bg='#ecf0f1', font=('Segoe UI', 10)).pack(side='left')
-        tk.Label(filter_frame, text=f"({len(overdue_ids)} overdue)", bg='#ecf0f1', fg='#e74c3c',
-                font=('Segoe UI', 9, 'bold')).pack(side='left', padx=10)
+        # Bind events
+        search_var.trace('w', lambda *args: refresh_tree())
+        show_overdue_only.trace('w', lambda *args: refresh_tree())
         
-        # Buttons
+        # Buttons frame
         btn_frame = tk.Frame(win)
         btn_frame.pack(side='bottom', pady=10)
         
@@ -569,24 +808,20 @@ class PharmacyApp:
                 messagebox.showwarning("Select Invoice", "Please select an invoice.")
                 return
             inv_id = tree.item(sel[0])['values'][0]
-            # Placeholder – implement payment dialog later
-            messagebox.showinfo("Coming Soon", f"Invoice {inv_id} details & payment recording will be added next.")
-        
+            self.view_invoice_details(inv_id)
+            
         def reprint_invoice():
-            sel = tree.selection()
-            if not sel:
-                messagebox.showwarning("Select Invoice", "Please select an invoice.")
-                return
-            inv_id = tree.item(sel[0])['values'][0]
-            self._reprint_invoice_by_id(inv_id)
+            messagebox.showwarning('COMING SOON', 'This feature will coming soon!')
+        
         
         tk.Button(btn_frame, text="View / Pay", command=view_invoice, bg='#3498db', fg='white', padx=15, pady=5).pack(side='left', padx=5)
-        tk.Button(btn_frame, text="Reprint Invoice", command=reprint_invoice, bg='#e67e22', fg='white', padx=15, pady=5).pack(side='left', padx=5)
+        # tk.Button(btn_frame, text="Reprint Invoice", command=reprint_invoice, bg='#e67e22', fg='white', padx=15, pady=5).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Refresh", command=lambda: [win.destroy(), self.show_invoice_analysis()], bg='#2c3e50', fg='white', padx=15, pady=5).pack(side='left', padx=5)
         tk.Button(btn_frame, text="Close", command=win.destroy, bg='#95a5a6', fg='white', padx=15, pady=5).pack(side='left', padx=5)
         
+        # Initial population
         refresh_tree()
-                    
+                        
     def print_invoice_pdf(self, pdf_data):
         """Print invoice PDF directly (same layout as save)"""
         try:
@@ -2575,57 +2810,6 @@ class PharmacyApp:
             messagebox.showerror("Print Error", f"Could not print: {str(e)}")
     
     # ========== REPORTS TAB ==========
-    
-    def show_invoice_list(self):
-        """Window to manage all invoices"""
-        conn = sqlite3.connect(self.get_database_path())
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, invoice_number, customer_name, total, amount_paid, due_date, status 
-            FROM invoices ORDER BY date_issued DESC
-        ''')
-        invoices = cursor.fetchall()
-        conn.close()
-        
-        win = tk.Toplevel(self.root)
-        win.title("Invoice Management")
-        win.geometry("900x500")
-        
-        tree = ttk.Treeview(win, columns=('ID', 'Number', 'Customer', 'Total', 'Paid', 'Due', 'Status'), show='headings')
-        for col in ('ID', 'Number', 'Customer', 'Total', 'Paid', 'Due', 'Status'):
-            tree.heading(col, text=col)
-            tree.column(col, width=100)
-        tree.column('Customer', width=200)
-        tree.pack(fill='both', expand=True)
-        
-        for inv in invoices:
-            tree.insert('', 'end', values=inv)
-        
-        def view_invoice():
-            sel = tree.selection()
-            if not sel: return
-            inv_id = tree.item(sel[0])['values'][0]
-            # Fetch full invoice details and show dialog with option to record payment or reprint
-            self.view_invoice_details(inv_id)
-        
-        tk.Button(win, text="View / Pay", command=view_invoice, bg='#3498db', fg='white').pack(pady=10)
-
-    def view_invoice_details(self, invoice_id):
-        """Show invoice details, allow payment recording and reprint"""
-        conn = sqlite3.connect(self.get_database_path())
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM invoices WHERE id = ?', (invoice_id,))
-        inv = cursor.fetchone()
-        cursor.execute('SELECT medicine_name, quantity, price_per_unit, total FROM invoice_items WHERE invoice_id = ?', (invoice_id,))
-        items = cursor.fetchall()
-        conn.close()
-        
-        # Create dialog
-        dialog = tk.Toplevel(self.root)
-        dialog.title(f"Invoice {inv[1]}")
-        dialog.geometry("600x500")
-    
-   
     
     def create_reports_tab(self):
         """Create reports tab"""
