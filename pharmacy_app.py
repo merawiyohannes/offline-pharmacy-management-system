@@ -28,6 +28,8 @@ class PharmacyApp:
         # Initialize data directories FIRST
         self.ensure_data_directories()
         
+        self.current_user = {}
+        
         # Configure style
         self.setup_styles()
         
@@ -38,7 +40,7 @@ class PharmacyApp:
         self.create_menu()
         
         # Create status bar
-        self.create_status_bar()
+        # self.create_status_bar()
         
         # Create main content area with notebook
         self.notebook = ttk.Notebook(root)
@@ -58,6 +60,200 @@ class PharmacyApp:
         self._last_tab = self.medicines_frame
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         self._switching_tab = False
+    
+    def show_activity_log(self):
+        """Display activity log with filters (user, date range)"""
+        conn = sqlite3.connect(self.get_database_path())
+        cursor = conn.cursor()
+        
+        # Get all users for filter dropdown
+        cursor.execute('SELECT id, username FROM users ORDER BY username')
+        users = cursor.fetchall()
+        conn.close()
+        
+        win = tk.Toplevel(self.root)
+        win.title("📜 Activity Log")
+        win.geometry("1100x600")
+        win.transient(self.root)
+        
+        # ----- Filter frame -----
+        filter_frame = tk.Frame(win, bg='#ecf0f1', padx=10, pady=10)
+        filter_frame.pack(fill='x')
+        
+        # Date range
+        tk.Label(filter_frame, text="From:", bg='#ecf0f1', font=('Segoe UI', 10)).grid(row=0, column=0, padx=5)
+        from_entry = tk.Entry(filter_frame, width=12)
+        from_entry.insert(0, (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
+        from_entry.grid(row=0, column=1, padx=5)
+        
+        tk.Label(filter_frame, text="To:", bg='#ecf0f1', font=('Segoe UI', 10)).grid(row=0, column=2, padx=5)
+        to_entry = tk.Entry(filter_frame, width=12)
+        to_entry.insert(0, datetime.now().strftime('%Y-%m-%d'))
+        to_entry.grid(row=0, column=3, padx=5)
+        
+        # User filter
+        tk.Label(filter_frame, text="User:", bg='#ecf0f1', font=('Segoe UI', 10)).grid(row=0, column=4, padx=5)
+        user_var = tk.StringVar(value='All')
+        user_combo = ttk.Combobox(filter_frame, textvariable=user_var, values=['All'] + [u[1] for u in users], width=15, state='readonly')
+        user_combo.grid(row=0, column=5, padx=5)
+        
+        # Action filter (simple text search)
+        tk.Label(filter_frame, text="Action contains:", bg='#ecf0f1', font=('Segoe UI', 10)).grid(row=1, column=0, padx=5, pady=5)
+        action_entry = tk.Entry(filter_frame, width=25)
+        action_entry.grid(row=1, column=1, columnspan=2, sticky='w', padx=5)
+        
+        # Buttons
+        def refresh_log():
+            # Build query
+            query = '''
+                SELECT timestamp, username, action, details 
+                FROM activity_log 
+                WHERE timestamp >= ? AND timestamp <= ?
+            '''
+            params = [from_entry.get().strip(), to_entry.get().strip() + ' 23:59:59']
+            
+            if user_var.get() != 'All':
+                query += ' AND username = ?'
+                params.append(user_var.get())
+            
+            if action_entry.get().strip():
+                query += ' AND action LIKE ?'
+                params.append(f'%{action_entry.get().strip()}%')
+            
+            query += ' ORDER BY timestamp DESC'
+            
+            conn2 = sqlite3.connect(self.get_database_path())
+            c2 = conn2.cursor()
+            c2.execute(query, params)
+            rows = c2.fetchall()
+            conn2.close()
+            
+            # Clear tree
+            for item in tree.get_children():
+                tree.delete(item)
+            
+            for row in rows:
+                tree.insert('', 'end', values=row)
+        
+        tk.Button(filter_frame, text="🔍 Search", command=refresh_log, bg='#3498db', fg='white').grid(row=1, column=4, padx=5)
+        tk.Button(filter_frame, text="Reset", command=lambda: [from_entry.delete(0, tk.END), from_entry.insert(0, (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')), to_entry.delete(0, tk.END), to_entry.insert(0, datetime.now().strftime('%Y-%m-%d')), user_var.set('All'), action_entry.delete(0, tk.END), refresh_log()], bg='#95a5a6', fg='white').grid(row=1, column=5, padx=5)
+        
+        # ----- Treeview -----
+        tree_frame = tk.Frame(win)
+        tree_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        columns = ('Timestamp', 'User', 'Action', 'Details')
+        tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
+        tree.heading('Timestamp', text='Timestamp')
+        tree.heading('User', text='User')
+        tree.heading('Action', text='Action')
+        tree.heading('Details', text='Details')
+        tree.column('Timestamp', width=160)
+        tree.column('User', width=120)
+        tree.column('Action', width=200)
+        tree.column('Details', width=500)
+        
+        scroll_y = ttk.Scrollbar(tree_frame, orient='vertical', command=tree.yview)
+        scroll_x = ttk.Scrollbar(tree_frame, orient='horizontal', command=tree.xview)
+        tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        
+        tree.grid(row=0, column=0, sticky='nsew')
+        scroll_y.grid(row=0, column=1, sticky='ns')
+        scroll_x.grid(row=1, column=0, sticky='ew')
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # Initial load
+        refresh_log()
+        
+        # Close button
+        btn_frame = tk.Frame(win)
+        btn_frame.pack(pady=10)
+        tk.Button(btn_frame, text="Close", command=win.destroy, bg='#2c3e50', fg='white', padx=20).pack()
+        
+        win.grab_set()
+    
+    def login_user(self):
+        """Show login dialog and set self.current_user"""
+        import hashlib
+        
+        login_win = tk.Toplevel(self.root)
+        login_win.title("Login - MERawi Pharmacy")
+        login_win.geometry("350x250")
+        login_win.transient(self.root)
+        login_win.grab_set()
+        login_win.resizable(False, False)
+        
+        tk.Label(login_win, text="MERawi PHARMACY PRO", font=('Segoe UI', 14, 'bold')).pack(pady=15)
+        tk.Label(login_win, text="Please login to continue", font=('Segoe UI', 10)).pack()
+        
+        frame = tk.Frame(login_win)
+        frame.pack(pady=20)
+        
+        tk.Label(frame, text="Username:", font=('Segoe UI', 10)).grid(row=0, column=0, padx=5, pady=5)
+        user_entry = tk.Entry(frame, width=20, font=('Segoe UI', 10))
+        user_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        tk.Label(frame, text="Password:", font=('Segoe UI', 10)).grid(row=1, column=0, padx=5, pady=5)
+        pass_entry = tk.Entry(frame, width=20, show='*', font=('Segoe UI', 10))
+        pass_entry.grid(row=1, column=1, padx=5, pady=5)
+        
+        result = {'success': False, 'user': None}
+        
+        def do_login():
+            username = user_entry.get().strip()
+            password = pass_entry.get()
+            if not username or not password:
+                messagebox.showerror("Error", "Enter username and password")
+                return
+            
+            hashed = hashlib.sha256(password.encode()).hexdigest()
+            conn = sqlite3.connect(self.get_database_path())
+            c = conn.cursor()
+            c.execute('SELECT id, username, role, full_name FROM users WHERE username=? AND password=?', (username, hashed))
+            row = c.fetchone()
+            conn.close()
+            
+            if row:
+                self.current_user = {
+                    'id': row[0],
+                    'username': row[1],
+                    'role': row[2],
+                    'full_name': row[3] or row[1]
+                } 
+                result['success'] = True
+                login_win.destroy()
+                self.create_status_bar()
+            else:
+                messagebox.showerror("Error", "Invalid username or password")
+        
+        def on_enter(event):
+            do_login()
+        
+        user_entry.bind('<Return>', on_enter)
+        pass_entry.bind('<Return>', on_enter)
+        
+        tk.Button(login_win, text="Login", command=do_login, bg='#27ae60', fg='white', padx=15, pady=5).pack(pady=10)
+        
+        login_win.wait_window()
+        return result['success']
+
+    def log_activity(self, action, details=""):
+        """Log user action to database"""
+        if not hasattr(self, 'current_user') or not self.current_user:
+            return
+        try:
+            conn = sqlite3.connect(self.get_database_path())
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO activity_log (user_id, username, action, details, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (self.current_user['id'], self.current_user['username'], action, details, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+            conn.commit()
+            conn.close()
+        except:
+            pass
     
     def show_settings(self):
         config = self.load_config()
@@ -460,7 +656,7 @@ class PharmacyApp:
     # ========== DATABASE MANAGEMENT ==========
     
     def view_invoice_details(self, invoice_id):
-        """Display invoice details and allow payment recording (fully functional)"""
+        """Display invoice details and allow payment recording (with user & log)"""
         import datetime
         
         # ----- Fetch invoice data -----
@@ -624,16 +820,24 @@ class PharmacyApp:
             conn2 = sqlite3.connect(self.get_database_path())
             cur2 = conn2.cursor()
             cur2.execute('UPDATE invoices SET amount_paid = ?, status = ? WHERE id = ?', (new_paid, new_status, invoice_id))
+            
+            # Insert into invoice_payments with user info
             cur2.execute('''
-                INSERT INTO invoice_payments (invoice_id, amount, payment_date, payment_method, reference)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (invoice_id, pay_amount, payment_date, payment_method, ref))
+                INSERT INTO invoice_payments (invoice_id, amount, payment_date, payment_method, reference, user_id, username)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (invoice_id, pay_amount, payment_date, payment_method, ref,
+                self.current_user['id'], self.current_user['username']))
+            
             # Append to notes
-            payment_log = f"\nPayment: {payment_date} | {pay_amount:.2f} Birr | {payment_method} | {ref}"
+            payment_log = f"\nPayment: {payment_date} | {pay_amount:.2f} Birr | {payment_method} | {ref} | by {self.current_user['username']}"
             new_notes = (notes or '') + payment_log
             cur2.execute('UPDATE invoices SET notes = ? WHERE id = ?', (new_notes.strip(), invoice_id))
             conn2.commit()
             conn2.close()
+            
+            # Log activity
+            self.log_activity("Invoice payment recorded",
+                            f"Invoice {inv_no}, amount {pay_amount:.2f}, method {payment_method}, remaining {total - new_paid:.2f}")
             
             messagebox.showinfo("Success", f"Payment recorded.\nNew status: {new_status}\nRemaining: {total - new_paid:.2f}")
             
@@ -649,6 +853,7 @@ class PharmacyApp:
     Date: {payment_date}
     Amount Paid: {pay_amount:.2f} Birr
     Method: {payment_method}
+    Cashier: {self.current_user['full_name']} ({self.current_user['username']})
     Status: {new_status}
     Total Paid: {new_paid:.2f} Birr
     Remaining: {total - new_paid:.2f} Birr
@@ -658,7 +863,6 @@ class PharmacyApp:
                 if hasattr(self, 'print_receipt'):
                     self.print_receipt(receipt_text)
                 else:
-                    # Fallback: show in messagebox (for testing)
                     messagebox.showinfo("Receipt Preview", receipt_text)
             
             win.destroy()
@@ -669,7 +873,7 @@ class PharmacyApp:
         
         win.update_idletasks()
         canvas.configure(scrollregion=canvas.bbox('all'))
-    
+        
     def show_invoice_analysis(self):
         """Invoice management with search + overdue filter + color coding"""
         import datetime
@@ -1126,11 +1330,13 @@ class PharmacyApp:
             
             cursor.execute('''
                 INSERT INTO invoices (invoice_number, customer_name, customer_phone, customer_address,
-                                    date_issued, due_date, subtotal, tax_rate, tax_amount, total, status, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?)
+                                    date_issued, due_date, subtotal, tax_rate, tax_amount, total, status,
+                                    user_id, username, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
             ''', (invoice_no, customer_data['name'], customer_data['phone'], customer_data['address'],
                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'), customer_data['due_date'],
-                subtotal, tax_rate, tax_amount, total, notes.strip()))
+                subtotal, tax_rate, tax_amount, total,
+                self.current_user['id'], self.current_user['username'], notes.strip()))
             
             invoice_id = cursor.lastrowid
             
@@ -1150,6 +1356,7 @@ class PharmacyApp:
             
             conn.commit()
             conn.close()
+            self.log_activity("Invoice created", f"Invoice {invoice_no}, total {total:.2f}, customer {customer_data['name']}")
             
             # Prepare PDF data
             pdf_data = {
@@ -1188,11 +1395,10 @@ class PharmacyApp:
         """Create SQLite database and tables if they don't exist"""
         try:
             db_path = self.get_database_path()
-            
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            
-            # Create medicines table
+
+            # Medicines table (unchanged)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS medicines (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1210,8 +1416,8 @@ class PharmacyApp:
                     UNIQUE(name, batch_number)
                 )
             ''')
-            
-            # Create sales table
+
+            # Sales table (base)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sales (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1225,35 +1431,31 @@ class PharmacyApp:
                     FOREIGN KEY (medicine_id) REFERENCES medicines (id)
                 )
             ''')
-            try:
-                cursor.execute("ALTER TABLE sales ADD COLUMN tin TEXT")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                cursor.execute("ALTER TABLE sales ADD COLUMN mode TEXT")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                cursor.execute("ALTER TABLE sales ADD COLUMN payment_method TEXT")
-            except sqlite3.OperationalError:
-                pass
-            
+            # Add missing columns to sales
+            for col, col_type in [('tin', 'TEXT'), ('mode', 'TEXT'), ('payment_method', 'TEXT'),
+                                ('user_id', 'INTEGER'), ('username', 'TEXT')]:
+                try:
+                    cursor.execute(f"ALTER TABLE sales ADD COLUMN {col} {col_type}")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Stock movements (unchanged)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS stock_movements (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     medicine_id INTEGER NOT NULL,
                     date TEXT NOT NULL,
-                    type TEXT NOT NULL,  -- 'purchase', 'sale', 'adjustment'
+                    type TEXT NOT NULL,
                     quantity INTEGER NOT NULL,
                     balance_before INTEGER NOT NULL,
                     balance_after INTEGER NOT NULL,
-                    reference TEXT,      -- sale_id, purchase_id, etc.
+                    reference TEXT,
                     notes TEXT,
                     FOREIGN KEY (medicine_id) REFERENCES medicines(id)
                 )
             ''')
-            
-            # Invoices table (credit sales)
+
+            # Invoices table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS invoices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1268,14 +1470,23 @@ class PharmacyApp:
                     tax_amount REAL DEFAULT 0,
                     total REAL NOT NULL,
                     amount_paid REAL DEFAULT 0,
-                    status TEXT DEFAULT 'Pending',  -- Pending, Partial, Paid, Overdue, Cancelled
+                    status TEXT DEFAULT 'Pending',
                     notes TEXT,
                     created_by TEXT,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # Add user columns to invoices
+            for col in ['user_id', 'username']:
+                try:
+                    cursor.execute(f"ALTER TABLE invoices ADD COLUMN {col} INTEGER")
+                    # username is TEXT, fix if needed
+                    if col == 'username':
+                        cursor.execute("ALTER TABLE invoices ADD COLUMN username TEXT")
+                except sqlite3.OperationalError:
+                    pass
 
-            # Invoice items (products sold in each invoice)
+            # Invoice items
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS invoice_items (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1290,7 +1501,7 @@ class PharmacyApp:
                 )
             ''')
 
-            # Payments received for invoices
+            # Invoice payments
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS invoice_payments (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1302,23 +1513,57 @@ class PharmacyApp:
                     FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE CASCADE
                 )
             ''')
-            
+
+            # Users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    password TEXT NOT NULL,
+                    role TEXT DEFAULT 'cashier',
+                    full_name TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # Activity log table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS activity_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    username TEXT,
+                    action TEXT NOT NULL,
+                    details TEXT,
+                    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            ''')
+
+            # Insert default admin if no users
+            cursor.execute('SELECT COUNT(*) FROM users')
+            if cursor.fetchone()[0] == 0:
+                import hashlib
+                hashed = hashlib.sha256('admin123'.encode()).hexdigest()
+                cursor.execute('''
+                    INSERT INTO users (username, password, role, full_name)
+                    VALUES (?, ?, ?, ?)
+                ''', ('admin', hashed, 'admin', 'Administrator'))
+
             conn.commit()
             conn.close()
-            
-            # Show welcome message (first time only)
+
+            # Welcome message (unchanged)
             welcome_file = os.path.join(self.get_app_data_dir(), '.welcome_shown')
             if not os.path.exists(welcome_file):
                 messagebox.showinfo("📍 Data Location", 
-                                   f"Your pharmacy data will be stored at:\n\n{self.get_app_data_dir()}\n\n"
-                                   f"This location is safe and won't be affected by app updates.\n"
-                                   f"You can always find your data in File → Data Location")
+                                f"Your pharmacy data will be stored at:\n\n{self.get_app_data_dir()}\n\n"
+                                f"This location is safe and won't be affected by app updates.\n"
+                                f"You can always find your data in File → Data Location")
                 with open(welcome_file, 'w') as f:
                     f.write('welcome')
-                    
         except Exception as e:
             messagebox.showerror("Database Error", f"Could not create database:\n{str(e)}")
-    
+            
     def setup_styles(self):
         """Configure styles"""
         style = ttk.Style()
@@ -1341,11 +1586,14 @@ class PharmacyApp:
         tk.Label(status_frame, text=center_text, bg='#34495e', fg='white',
                 font=('Segoe UI', 9, 'bold')).pack(side='left', padx=20, pady=5)
         
-        # Right side - Location & Support
-        right_text = "📍 Addis Ababa, Ethiopia  |  ⚕️ Support 24/7"
-        tk.Label(status_frame, text=right_text, bg='#34495e', fg='#bdc3c7',
-                font=('Segoe UI', 9)).pack(side='right', padx=15, pady=5)
-    
+        # Right side - User
+        if self.current_user and self.current_user.get('full_name'):
+            user_text = f"👤 {self.current_user['full_name']} ({self.current_user['role']})"
+        else:
+            user_text = "👤 Not logged in"
+        tk.Label(status_frame, text=user_text, bg='#34495e', fg='#f1c40f',
+                font=('Segoe UI', 9, 'bold')).pack(side='right', padx=15, pady=5)
+        
     def create_menu(self):
         """Create menu bar"""
         menubar = tk.Menu(self.root)
@@ -1368,6 +1616,7 @@ class PharmacyApp:
         reports_menu.add_command(label="⏰ Expiring Medicines", command=self.expiring_report)
         reports_menu.add_command(label="💰 Today's Sales", command=self.today_sales_report)
         reports_menu.add_command(label="📊 Invoice Analysis", command=self.show_invoice_analysis)
+        reports_menu.add_command(label="📜 Activity Log", command=self.show_activity_log)
         
         # Settings menu
         settings_menu = tk.Menu(menubar, tearoff=0)
@@ -2584,7 +2833,7 @@ class PharmacyApp:
         self.update_bill_total()
     
     def complete_sale(self):
-        """Complete sale and record stock movements"""
+        """Complete sale, record stock movement, log activity, and include user"""
         if not self.bill_items:
             messagebox.showwarning("Warning", "No items in bill")
             return
@@ -2600,7 +2849,6 @@ class PharmacyApp:
             receipt_no = f"R{datetime.now().strftime('%Y%m%d%H%M%S')}"
             mode = 'government' if self.government_mode else 'private'
             
-            # Prepare fields that depend on mode
             customer_tin = ''
             payment_method = ''
             if self.government_mode:
@@ -2609,8 +2857,9 @@ class PharmacyApp:
                 if self.payment_method:
                     payment_method = self.payment_method.get()
             
+            total_sale = 0
             for item in self.bill_items:
-                # Get current quantity before update
+                # Get current quantity
                 cursor.execute('SELECT quantity FROM medicines WHERE id = ?', (item['id'],))
                 old_qty = cursor.fetchone()[0]
                 new_qty = old_qty - item['qty']
@@ -2618,20 +2867,25 @@ class PharmacyApp:
                 # Update stock
                 cursor.execute('UPDATE medicines SET quantity = ? WHERE id = ?', (new_qty, item['id']))
                 
-                # Insert stock movement
+                # Stock movement
                 cursor.execute('''
                     INSERT INTO stock_movements (medicine_id, date, type, quantity, balance_before, balance_after, reference)
                     VALUES (?, ?, 'sale', ?, ?, ?, ?)
                 ''', (item['id'], sale_date, -item['qty'], old_qty, new_qty, f"Sale {receipt_no}"))
                 
-                # Insert sales record
+                # Sales record with user_id and username
                 cursor.execute('''
-                    INSERT INTO sales (medicine_id, medicine_name, quantity, price_per_unit, total_price, sale_date, tin, mode, payment_method)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (item['id'], item['name'], item['qty'], item['price'], item['total'], sale_date, customer_tin, mode, payment_method))
+                    INSERT INTO sales (medicine_id, medicine_name, quantity, price_per_unit, total_price, sale_date, tin, mode, payment_method, user_id, username)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (item['id'], item['name'], item['qty'], item['price'], item['total'], sale_date, customer_tin, mode, payment_method, self.current_user['id'], self.current_user['username']))
+                
+                total_sale += item['total']
             
             conn.commit()
             conn.close()
+            
+            # Log activity
+            self.log_activity("Sale completed", f"Receipt {receipt_no}, total {total_sale:.2f}, mode {mode}")
             
             self.show_receipt()
             self.clear_bill()
@@ -2639,7 +2893,8 @@ class PharmacyApp:
             
         except Exception as e:
             messagebox.showerror("Error", f"Sale failed: {str(e)}")
-            
+            self.log_activity("Sale failed", str(e))
+                    
     def show_receipt(self):
         receipt = tk.Toplevel(self.root)
         receipt.title("🧾 Receipt")
@@ -2659,6 +2914,13 @@ class PharmacyApp:
                 bg='white', font=('Courier', 10)).pack(anchor='w')
         tk.Label(info_frame, text=f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 bg='white', font=('Courier', 10)).pack(anchor='w')
+
+        # Cashier info (after date)
+        if self.current_user and self.current_user.get('full_name'):
+            cashier_text = f"Cashier: {self.current_user['full_name']} ({self.current_user['username']})"
+        else:
+            cashier_text = "Cashier: Not logged in"
+        tk.Label(info_frame, text=cashier_text, bg='white', font=('Courier', 9)).pack(anchor='w')
 
         if self.government_mode:
             # Show TINs and payment method
@@ -2696,6 +2958,7 @@ class PharmacyApp:
         text.insert('end', "-"*40 + "\n")
         text.insert('end', f"TOTAL: {total:30.2f} Birr\n")
         text.insert('end', "="*40 + "\n")
+        text.insert('end', f"{cashier_text}\n")   # also insert cashier in text content
         text.insert('end', "Thank you for your purchase!\n")
 
         text.config(state='disabled')
@@ -2715,7 +2978,7 @@ class PharmacyApp:
 
         tk.Button(btn_frame, text="❌ Close", bg='#e74c3c', fg='white',
                 font=('Segoe UI', 10), command=receipt.destroy).pack(side='left', padx=5)
-    
+        
     def save_receipt_pdf(self, receipt_text):
         """Save receipt as PDF"""
         try:
@@ -3089,7 +3352,7 @@ class PharmacyApp:
                     ''', (medicine_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), quantity, quantity, "Initial stock"))
                 conn.commit()
                 conn.close()
-                
+                self.log_activity("Medicine added", f"Name: {name}, batch: {entries["Batch Number:"].get().strip()}")
                 dialog.destroy()
                 self.load_medicines()
                 messagebox.showinfo("Success", "Medicine added successfully!")
@@ -3207,6 +3470,7 @@ class PharmacyApp:
                     ''', (med_id, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), diff, old_qty, new_qty, "Manual adjustment"))
                 conn.commit()
                 conn.close()
+                self.log_activity("Medicine updated", f"ID: {med_id}, name: {item['values'][1]}")
                 dialog.destroy()
                 self.load_medicines()
                 messagebox.showinfo("Success", "Medicine updated!")
@@ -3255,7 +3519,7 @@ class PharmacyApp:
             
             conn.commit()
             conn.close()
-            
+            self.log_activity("Medicine deleted", f"ID: {med_id}, name: {item['values'][1]}")
             self.load_medicines()
             messagebox.showinfo("Success", "Medicine deleted")
             
@@ -3296,7 +3560,7 @@ class PharmacyApp:
                 writer.writerows(sales)
             
             conn.close()
-            
+            self.log_activity("Backup created", f"File: f'sales_{timestamp}")
             messagebox.showinfo("✅ Backup Complete",
                               f"Backup saved to:\n{backups_dir}\n\n"
                               f"Files:\n{os.path.basename(med_file)}\n{os.path.basename(sales_file)}")
@@ -3488,7 +3752,7 @@ class PharmacyApp:
                             skip_count += 1
                             error_rows.append(f"Row {row_num}: {str(e)}")
                             continue
-            
+                self.log_activity("Excel import", f"Records imported")
             # ---------- Excel (XLSX) ----------
             elif filename.lower().endswith('.xlsx'):
                 from openpyxl import load_workbook
@@ -4199,19 +4463,28 @@ class PharmacyApp:
 # ========== MAIN ==========
 
 def main():
-    """Main entry point with error handling"""
+    """Main entry point – login first, then show main window"""
     try:
         root = tk.Tk()
-        app = PharmacyApp(root)
+        app = PharmacyApp(root)   # creates everything but window is hidden
         
-        if not app.check_license():
+        # Show login dialog (you need to implement login_user method)
+        if not app.login_user():
             root.quit()
             return
         
+        # Now check license (your existing flow)
+        if not app.check_license():
+            root.quit()
+            return 
+        
+        # Show the main window
+        root.deiconify()
         root.mainloop()
         
     except Exception as e:
-        # Show detailed error message with contact info
+        # Detailed error message (same as before)
+        print(e)
         error_msg = f"""❌ APPLICATION ERROR
 
 An unexpected error occurred:
@@ -4228,11 +4501,11 @@ Please send a screenshot of this error message."""
         
         messagebox.showerror("🚨 Critical Error", error_msg)
         
-        # Also write to log file
+        # Write to log file
         try:
             log_dir = os.path.join(os.environ['LOCALAPPDATA'], 'MERawiPharmacy', 'logs')
             os.makedirs(log_dir, exist_ok=True)
-            log_file = os.path.join(log_dir, f"error_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+            log_file = os.path.join(log_dir, f"error_{datetime.now().strftime('%Y%m%d%H%M%S')}.log")
             
             with open(log_file, 'w') as f:
                 f.write(f"Error Time: {datetime.now()}\n")
@@ -4242,13 +4515,12 @@ Please send a screenshot of this error message."""
                 f.write(f"Traceback:\n{traceback.format_exc()}")
             
             messagebox.showinfo("📝 Log Saved", f"Error log saved to:\n{log_file}")
-            
         except:
             pass
         
-        # Don't quit immediately - let user see the error
-        root.mainloop()
-
+        # Keep the error window alive
+        if 'root' in locals():
+            root.mainloop()
 if __name__ == "__main__":
     main()
              
