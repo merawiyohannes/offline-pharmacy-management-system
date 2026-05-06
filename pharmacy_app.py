@@ -25,38 +25,34 @@ class PharmacyApp:
         self.root.title("MERawi Pharmacy Pro - Complete Pharmacy Management System")
         self.root.geometry("1200x700")
         
-        # Initialize data directories FIRST
+        # Initialize data directories
         self.ensure_data_directories()
-        
         self.current_user = {}
-        
-        # Configure style
         self.setup_styles()
-        
-        # Create database and tables
         self.create_database()
         
+        # Build main UI (menu, notebook, tabs)
+        self.build_main_ui()
+        
+    def build_main_ui(self):
+        """Creates all UI elements (menu, notebook, tabs) – called at startup and after login"""
         # Create menu bar
         self.create_menu()
         
-        # Create status bar
+        # Status bar is commented out in your __init__, so we leave it commented here too
         # self.create_status_bar()
         
-        # Create main content area with notebook
-        self.notebook = ttk.Notebook(root)
+        # Create notebook and tabs
+        self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Create tabs
         self.create_medicines_tab()
         self.create_sales_tab()
         self.create_reports_tab()
-        self.create_dashboard_tab()
         self.create_bin_card_tab()
         
-        # Load initial data
+        # Load data and bindings
         self.load_medicines()
         self.check_alerts()
-        
         self._last_tab = self.medicines_frame
         self.notebook.bind("<<NotebookTabChanged>>", self.on_tab_changed)
         self._switching_tab = False
@@ -174,6 +170,184 @@ class PharmacyApp:
         
         win.grab_set()
     
+    def show_signup_dialog(self):
+        """Dialog to add a new user (admin only)"""
+        if not self.current_user or self.current_user.get('role') != 'admin':
+            messagebox.showerror("Access Denied", "Only administrators can add users.")
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Add New User")
+        dialog.geometry("350x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Create New User", font=('Segoe UI', 12, 'bold')).pack(pady=10)
+        
+        frame = tk.Frame(dialog)
+        frame.pack(pady=10)
+        
+        tk.Label(frame, text="Username:").grid(row=0, column=0, pady=5, padx=5)
+        username_entry = tk.Entry(frame, width=20)
+        username_entry.grid(row=0, column=1, pady=5)
+        
+        tk.Label(frame, text="Password:").grid(row=1, column=0, pady=5, padx=5)
+        password_entry = tk.Entry(frame, show='*', width=20)
+        password_entry.grid(row=1, column=1, pady=5)
+        
+        tk.Label(frame, text="Confirm Password:").grid(row=2, column=0, pady=5, padx=5)
+        confirm_entry = tk.Entry(frame, show='*', width=20)
+        confirm_entry.grid(row=2, column=1, pady=5)
+        
+        tk.Label(frame, text="Role:").grid(row=3, column=0, pady=5, padx=5)
+        role_var = tk.StringVar(value='cashier')
+        role_combo = ttk.Combobox(frame, textvariable=role_var, values=['admin', 'cashier'], state='readonly', width=18)
+        role_combo.grid(row=3, column=1, pady=5)
+        
+        tk.Label(frame, text="Full Name:").grid(row=4, column=0, pady=5, padx=5)
+        fullname_entry = tk.Entry(frame, width=20)
+        fullname_entry.grid(row=4, column=1, pady=5)
+        
+        def add_user():
+            username = username_entry.get().strip()
+            password = password_entry.get()
+            confirm = confirm_entry.get()
+            role = role_var.get()
+            fullname = fullname_entry.get().strip()
+            
+            if not username or not password:
+                messagebox.showerror("Error", "Username and password required")
+                return
+            if password != confirm:
+                messagebox.showerror("Error", "Passwords do not match")
+                return
+            
+            import hashlib
+            hashed = hashlib.sha256(password.encode()).hexdigest()
+            
+            conn = sqlite3.connect(self.get_database_path())
+            cursor = conn.cursor()
+            try:
+                cursor.execute('INSERT INTO users (username, password, role, full_name) VALUES (?, ?, ?, ?)',
+                            (username, hashed, role, fullname))
+                conn.commit()
+                messagebox.showinfo("Success", f"User '{username}' created successfully.")
+                dialog.destroy()
+            except sqlite3.IntegrityError:
+                messagebox.showerror("Error", "Username already exists.")
+            finally:
+                conn.close()
+        
+        tk.Button(dialog, text="Create User", command=add_user, bg='#27ae60', fg='white').pack(pady=20)
+    
+    def show_my_account(self):
+        """Dialog for user to change their own password and full name"""
+        import hashlib
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("My Account")
+        dialog.geometry("400x350")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        tk.Label(dialog, text="Update Your Account", font=('Segoe UI', 12, 'bold')).pack(pady=10)
+        
+        frame = tk.Frame(dialog)
+        frame.pack(pady=10)
+        
+        # Current username (readonly)
+        tk.Label(frame, text="Username:").grid(row=0, column=0, pady=5, padx=5)
+        username_label = tk.Label(frame, text=self.current_user['username'], bg='#ecf0f1', width=20, anchor='w')
+        username_label.grid(row=0, column=1, pady=5)
+        
+        # Full name (editable)
+        tk.Label(frame, text="Full Name:").grid(row=1, column=0, pady=5, padx=5)
+        fullname_entry = tk.Entry(frame, width=20)
+        fullname_entry.insert(0, self.current_user.get('full_name', ''))
+        fullname_entry.grid(row=1, column=1, pady=5)
+        
+        # Change password section
+        tk.Label(frame, text="Change Password (optional)", font=('Segoe UI', 10, 'bold')).grid(row=2, column=0, columnspan=2, pady=(15,5))
+        
+        tk.Label(frame, text="Current Password:").grid(row=3, column=0, pady=5, padx=5)
+        old_pass_entry = tk.Entry(frame, show='*', width=20)
+        old_pass_entry.grid(row=3, column=1, pady=5)
+        
+        tk.Label(frame, text="New Password:").grid(row=4, column=0, pady=5, padx=5)
+        new_pass_entry = tk.Entry(frame, show='*', width=20)
+        new_pass_entry.grid(row=4, column=1, pady=5)
+        
+        tk.Label(frame, text="Confirm New Password:").grid(row=5, column=0, pady=5, padx=5)
+        confirm_pass_entry = tk.Entry(frame, show='*', width=20)
+        confirm_pass_entry.grid(row=5, column=1, pady=5)
+        
+        def save_changes():
+            new_fullname = fullname_entry.get().strip()
+            old_pass = old_pass_entry.get()
+            new_pass = new_pass_entry.get()
+            confirm = confirm_pass_entry.get()
+            
+            # Verify current password if trying to change password
+            if new_pass or confirm:
+                if not old_pass:
+                    messagebox.showerror("Error", "Current password required to change password")
+                    return
+                # Check old password
+                hashed_old = hashlib.sha256(old_pass.encode()).hexdigest()
+                conn = sqlite3.connect(self.get_database_path())
+                c = conn.cursor()
+                c.execute('SELECT password FROM users WHERE id = ?', (self.current_user['id'],))
+                stored = c.fetchone()[0]
+                conn.close()
+                if stored != hashed_old:
+                    messagebox.showerror("Error", "Current password is incorrect")
+                    return
+                
+                if new_pass != confirm:
+                    messagebox.showerror("Error", "New passwords do not match")
+                    return
+                if len(new_pass) < 4:
+                    messagebox.showerror("Error", "Password must be at least 4 characters")
+                    return
+                new_hashed = hashlib.sha256(new_pass.encode()).hexdigest()
+            else:
+                new_hashed = None
+            
+            # Update database
+            conn = sqlite3.connect(self.get_database_path())
+            c = conn.cursor()
+            if new_hashed:
+                c.execute('UPDATE users SET password = ?, full_name = ? WHERE id = ?', (new_hashed, new_fullname, self.current_user['id']))
+            else:
+                c.execute('UPDATE users SET full_name = ? WHERE id = ?', (new_fullname, self.current_user['id']))
+            conn.commit()
+            conn.close()
+            
+            # Update current_user in memory
+            self.current_user['full_name'] = new_fullname
+            
+            # Update status bar user label
+            self.update_status_bar_user()  # you already have this method
+            
+            messagebox.showinfo("Success", "Account updated successfully")
+            dialog.destroy()
+        
+        tk.Button(dialog, text="Save Changes", command=save_changes, bg='#27ae60', fg='white', padx=15).pack(pady=20)
+        
+    def update_status_bar_user(self):
+        """Update the user label in status bar after changes"""
+        for child in self.root.winfo_children():
+            if isinstance(child, tk.Frame):
+                for grand in child.winfo_children():
+                    if isinstance(grand, tk.Label):
+                        text = grand.cget('text')
+                        if text and text.startswith('👤'):
+                            if self.current_user and self.current_user.get('full_name'):
+                                grand.config(text=f"👤 {self.current_user['full_name']} ({self.current_user['role']})")
+                            else:
+                                grand.config(text="👤 Not logged in")
+                            return
+    
     def login_user(self):
         """Show login dialog and set self.current_user"""
         import hashlib
@@ -239,6 +413,35 @@ class PharmacyApp:
         login_win.wait_window()
         return result['success']
 
+    def logout(self):
+        """Logout – destroy all UI, show login dialog, rebuild UI after success"""
+        if messagebox.askyesno("Logout", "Are you sure you want to log out?"):
+            # Clear current user
+            self.current_user = {}
+            
+            # Destroy all widgets inside the root window (menu, notebook, etc.)
+            for child in self.root.winfo_children():
+                child.destroy()
+            
+            # Now the root window is empty but visible.
+            # Show login dialog (modal, on top of the empty root)
+            if self.login_user():
+                # Rebuild the entire UI
+                self.build_main_ui()
+                self.enable_admin_menu()
+                self.update_status_bar_user()
+                self.load_medicines()
+                self.check_alerts()
+            else:
+                # User cancelled login – exit the application
+                self.root.quit()
+                                                    
+    def enable_admin_menu(self):
+        """Enable User Management and Analytics only for admin"""
+        if self.current_user and self.current_user.get('role') == 'admin':
+            self.settings_menu.entryconfig("👥 User Management", state='normal')
+            self.settings_menu.entryconfig("📊 Analytics", state='normal')
+                        
     def log_activity(self, action, details=""):
         """Log user action to database"""
         if not hasattr(self, 'current_user') or not self.current_user:
@@ -1595,11 +1798,10 @@ class PharmacyApp:
                 font=('Segoe UI', 9, 'bold')).pack(side='right', padx=15, pady=5)
         
     def create_menu(self):
-        """Create menu bar"""
         menubar = tk.Menu(self.root)
         self.root.config(menu=menubar)
         
-        # File menu
+        # ---------- File menu ----------
         file_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="📁 File", menu=file_menu)
         file_menu.add_command(label="💾 Backup to Excel", command=self.backup_to_excel)
@@ -1609,105 +1811,116 @@ class PharmacyApp:
         file_menu.add_separator()
         file_menu.add_command(label="🚪 Exit", command=self.root.quit)
         
-        # Reports menu
+        # ---------- Reports menu ----------
         reports_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="📊 Reports", menu=reports_menu)
         reports_menu.add_command(label="⚠️ Low Stock Report", command=self.low_stock_report)
         reports_menu.add_command(label="⏰ Expiring Medicines", command=self.expiring_report)
         reports_menu.add_command(label="💰 Today's Sales", command=self.today_sales_report)
         reports_menu.add_command(label="📊 Invoice Analysis", command=self.show_invoice_analysis)
-        reports_menu.add_command(label="📜 Activity Log", command=self.show_activity_log)
         
-        # Settings menu
-        settings_menu = tk.Menu(menubar, tearoff=0)
-        menubar.add_cascade(label="⚙️ Settings", menu=settings_menu)
-        settings_menu.add_command(label="Preferences", command=self.show_settings)
+        # ---------- Settings menu ----------
+        self.settings_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="⚙️ Settings", menu=self.settings_menu)
         
-        # Help menu
+        # Preferences (always visible)
+        self.settings_menu.add_command(label="⚙️ POS-Preferences", command=self.show_settings)
+        self.settings_menu.add_separator()
+        
+        self.analytics_menu = tk.Menu(self.settings_menu, tearoff=0)
+        self.settings_menu.add_cascade(label="📊 Analytics", menu=self.analytics_menu)
+        self.analytics_menu.add_command(label="📈 Business Intelligence Report", command=self.test_database_contents)
+        self.analytics_menu.add_command(label="📊 Live Dashboard", command=self.show_dashboard_popup)
+        self.settings_menu.entryconfig("📊 Analytics", state='disabled')
+        self.settings_menu.add_separator()
+        
+        # My Account (always visible)
+        self.settings_menu.add_command(label="👤 My Account", command=self.show_my_account)
+        self.settings_menu.add_separator()
+        
+        # User Management submenu (admin only – initially disabled)
+        self.user_mgmt_menu = tk.Menu(self.settings_menu, tearoff=0)
+        self.settings_menu.add_cascade(label="👥 User Management", menu=self.user_mgmt_menu)
+        self.user_mgmt_menu.add_command(label="➕ Add New User", command=self.show_signup_dialog)
+        self.user_mgmt_menu.add_command(label="📜 Activity Log", command=self.show_activity_log)
+        self.settings_menu.entryconfig("👥 User Management", state='disabled')
+        
+        self.settings_menu.add_separator()
+        self.settings_menu.add_command(label="🚪 Logout", command=self.logout, foreground='red')
+        
+        # ---------- Help menu ----------
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="❓ Help", menu=help_menu)
         help_menu.add_command(label="ℹ️ About", command=self.show_about)
-    
+                
     # ========== DASHBOARD TAB ==========
     
-    def create_dashboard_tab(self):
-        """Create dashboard with critical visual graphs - FULL WIDTH, ALL LABELS VISIBLE"""
-        self.dashboard_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.dashboard_frame, text="📊 Dashboard")
+    def _refresh_dashboard_popup(self, old_popup):
+        """Close old dashboard popup and open a fresh one"""
+        old_popup.destroy()
+        self.show_dashboard_popup()
+    
+    def show_dashboard_popup(self):
+        """Opens a resizable popup window with the complete dashboard (with Refresh)"""
+        # ----- Data collection (exactly the same as before) -----
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        from datetime import timedelta
         
-        # ========== GET ALL DATA ==========
         conn = sqlite3.connect(self.get_database_path())
         cursor = conn.cursor()
         
         # Financial data
         cursor.execute('SELECT SUM(quantity * purchase_price) FROM medicines')
         total_cost = cursor.fetchone()[0] or 0
-        
         cursor.execute('SELECT SUM(quantity * selling_price) FROM medicines')
         total_revenue_potential = cursor.fetchone()[0] or 0
-        
         potential_profit = total_revenue_potential - total_cost
         profit_margin = (potential_profit / total_revenue_potential * 100) if total_revenue_potential > 0 else 0
         
-        # Today's sales
         today = datetime.now().strftime('%Y-%m-%d')
         cursor.execute('SELECT SUM(total_price), COUNT(*) FROM sales WHERE sale_date LIKE ?', (f'{today}%',))
         today_data = cursor.fetchone()
         today_revenue = today_data[0] or 0
         today_transactions = today_data[1] or 0
         
-        # All-time sales
         cursor.execute('SELECT SUM(total_price) FROM sales')
         total_revenue = cursor.fetchone()[0] or 0
-        
         cursor.execute('SELECT COUNT(*) FROM sales')
         total_transactions = cursor.fetchone()[0] or 0
         
-        # Counts
         cursor.execute('SELECT COUNT(*) FROM medicines')
         total_products = cursor.fetchone()[0]
-        
         cursor.execute('SELECT SUM(quantity) FROM medicines')
         total_units = cursor.fetchone()[0] or 0
-        
-        # Low stock count
         cursor.execute('SELECT COUNT(*) FROM medicines WHERE quantity <= min_stock')
         low_stock_count = cursor.fetchone()[0]
         
-        # ========== EXPIRY ANALYSIS ==========
+        # Expiry analysis
         today_date = datetime.now().date()
         cursor.execute('SELECT expiry_date, quantity, min_stock, selling_price FROM medicines')
         all_meds = cursor.fetchall()
         
-        # Status counts
         healthy = {'count': 0, 'units': 0, 'value': 0}
         low_stock = {'count': 0, 'units': 0, 'value': 0}
         expiring = {'count': 0, 'units': 0, 'value': 0}
         expired = {'count': 0, 'units': 0, 'value': 0, 'loss': 0}
-        
-        # Monthly expiry distribution (FULL YEAR)
-        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
-                'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-        monthly_expiry = {month: 0 for month in months}
-        
-        # Expiry value by month
-        monthly_expiry_value = {month: 0 for month in months}
+        monthly_expiry = {m: 0 for m in ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']}
+        monthly_expiry_value = {m: 0 for m in monthly_expiry}
         
         for exp, qty, min_stk, price in all_meds:
             item_value = qty * price
-            is_expired = False
-            is_expiring = False
-            
+            is_expired = is_expiring = False
             if exp and len(exp) == 10:
                 try:
                     expiry = datetime.strptime(exp, '%Y-%m-%d').date()
                     days = (expiry - today_date).days
                     month_name = expiry.strftime('%b')
-                    
                     if month_name in monthly_expiry:
                         monthly_expiry[month_name] += qty
                         monthly_expiry_value[month_name] += item_value
-                    
                     if days < 0:
                         expired['count'] += 1
                         expired['units'] += qty
@@ -1718,8 +1931,7 @@ class PharmacyApp:
                         expiring['units'] += qty
                         expiring['value'] += item_value
                         is_expiring = True
-                except:
-                    pass
+                except: pass
             
             if not is_expired and not is_expiring:
                 if qty <= min_stk:
@@ -1731,79 +1943,27 @@ class PharmacyApp:
                     healthy['units'] += qty
                     healthy['value'] += item_value
         
-        # ========== CATEGORY DATA ==========
-        cursor.execute('''
-            SELECT category, COUNT(*) as count, SUM(quantity) as total_qty 
-            FROM medicines 
-            WHERE category IS NOT NULL AND category != ''
-            GROUP BY category 
-            ORDER BY count DESC 
-        ''')
+        # Categories
+        cursor.execute('SELECT category, COUNT(*) FROM medicines WHERE category IS NOT NULL AND category != "" GROUP BY category ORDER BY COUNT(*) DESC LIMIT 5')
         categories = cursor.fetchall()
         
-        # ========== TOP SELLERS ==========
-        cursor.execute('''
-            SELECT medicine_name, SUM(quantity) as total_sold, SUM(total_price) as revenue
-            FROM sales 
-            GROUP BY medicine_name 
-            ORDER BY total_sold DESC 
-            LIMIT 5
-        ''')
+        # Top sellers
+        cursor.execute('SELECT medicine_name, SUM(quantity) as total_sold, SUM(total_price) as revenue FROM sales GROUP BY medicine_name ORDER BY total_sold DESC LIMIT 5')
         top_sellers = cursor.fetchall()
         
-        # ========== MONTHLY SALES TREND (12 MONTHS) ==========
+        # Monthly sales trend
         monthly_sales = {}
-        monthly_transactions = {}
-        
-        # Initialize last 12 months
         for i in range(11, -1, -1):
             month_date = today_date - timedelta(days=30*i)
             month_key = month_date.strftime('%b %Y')
             monthly_sales[month_key] = 0
-            monthly_transactions[month_key] = 0
-        
-        cursor.execute('''
-            SELECT strftime('%Y-%m', sale_date) as month, 
-                SUM(total_price) as total,
-                COUNT(*) as trans
-            FROM sales 
-            GROUP BY month 
-            ORDER BY month DESC 
-            LIMIT 12
-        ''')
-        for month, amount, trans in cursor.fetchall():
+        cursor.execute('SELECT strftime("%Y-%m", sale_date) as month, SUM(total_price) FROM sales GROUP BY month ORDER BY month DESC LIMIT 12')
+        for month, amount in cursor.fetchall():
             month_name = datetime.strptime(month + '-01', '%Y-%m-%d').strftime('%b %Y')
             monthly_sales[month_name] = amount or 0
-            monthly_transactions[month_name] = trans or 0
         
-        # ========== TOP MANUFACTURERS ==========
-        cursor.execute('''
-            SELECT manufacturer, COUNT(*) as count 
-            FROM medicines 
-            WHERE manufacturer IS NOT NULL AND manufacturer != ''
-            GROUP BY manufacturer 
-            ORDER BY count DESC 
-            LIMIT 5
-        ''')
-        top_manufacturers = cursor.fetchall()
-        
-        # ========== PRICE RANGE DISTRIBUTION ==========
-        price_ranges = {'0-50': 0, '51-100': 0, '101-200': 0, '201-500': 0, '500+': 0}
-        cursor.execute('SELECT selling_price, quantity FROM medicines')
-        for price, qty in cursor.fetchall():
-            if price <= 50:
-                price_ranges['0-50'] += qty
-            elif price <= 100:
-                price_ranges['51-100'] += qty
-            elif price <= 200:
-                price_ranges['101-200'] += qty
-            elif price <= 500:
-                price_ranges['201-500'] += qty
-            else:
-                price_ranges['500+'] += qty
-        
-        # ========== WEEKDAY SALES PATTERN ==========
-        weekdays = {'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0, 'Sat': 0, 'Sun': 0}
+        # Weekday pattern
+        weekdays = {'Mon':0,'Tue':0,'Wed':0,'Thu':0,'Fri':0,'Sat':0,'Sun':0}
         cursor.execute('SELECT sale_date, total_price FROM sales')
         for date_str, amount in cursor.fetchall():
             if date_str and len(date_str) >= 10:
@@ -1812,44 +1972,54 @@ class PharmacyApp:
                     weekday = sale_date.strftime('%a')
                     if weekday in weekdays:
                         weekdays[weekday] += amount
-                except:
-                    pass
+                except: pass
+        
+        # Price ranges
+        price_ranges = {'0-50':0,'51-100':0,'101-200':0,'201-500':0,'500+':0}
+        cursor.execute('SELECT selling_price, quantity FROM medicines')
+        for price, qty in cursor.fetchall():
+            if price <= 50: price_ranges['0-50'] += qty
+            elif price <= 100: price_ranges['51-100'] += qty
+            elif price <= 200: price_ranges['101-200'] += qty
+            elif price <= 500: price_ranges['201-500'] += qty
+            else: price_ranges['500+'] += qty
         
         conn.close()
         
-        # ========== HEADER ==========
-        header_frame = tk.Frame(self.dashboard_frame, bg='white', padx=25, pady=15)
-        header_frame.pack(fill='x')
+        # ----- Build popup window -----
+        popup = tk.Toplevel(self.root)
+        popup.title("📊 Live Dashboard - MERawi Pharmacy Pro")
+        popup.geometry("1200x800")
+        popup.minsize(800, 600)
+        popup.resizable(True, True)
+        popup.transient(self.root)
         
-        title_frame = tk.Frame(header_frame, bg='white')
-        title_frame.pack(side='left')
+        # Top toolbar with Refresh button
+        toolbar = tk.Frame(popup, bg='#2c3e50', height=40)
+        toolbar.pack(fill='x', side='top')
+        toolbar.pack_propagate(False)
+        tk.Label(toolbar, text="📊 Live Dashboard", bg='#2c3e50', fg='white', font=('Segoe UI', 12, 'bold')).pack(side='left', padx=15, pady=8)
+        refresh_btn = tk.Button(toolbar, text="🔄 Refresh", bg='#27ae60', fg='white', font=('Segoe UI', 9, 'bold'), command=lambda: self._refresh_dashboard_popup(popup))
+        refresh_btn.pack(side='right', padx=15, pady=5)
         
-        tk.Label(title_frame, text="📊 MERawi PHARMACY PRO", 
-                bg='white', fg='#2c3e50', font=('Segoe UI', 18, 'bold')).pack(anchor='w')
-        tk.Label(title_frame, text="Business Intelligence Dashboard - Complete Pharmacy Analytics", 
-                bg='white', fg='#7f8c8d', font=('Segoe UI', 10)).pack(anchor='w')
-        
-        refresh_btn = tk.Button(header_frame, text="🔄 Refresh Data", bg='#3498db', fg='white',
-                            font=('Segoe UI', 10, 'bold'), padx=20, pady=8,
-                            relief='flat', command=self.refresh_dashboard)
-        refresh_btn.pack(side='right')
-        
-        tk.Label(header_frame, text=f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                bg='white', fg='#95a5a6', font=('Segoe UI', 9)).pack(anchor='w', pady=(5,0))
-        
-        # ========== SCROLLABLE AREA (FULL WIDTH) ==========
-        canvas = tk.Canvas(self.dashboard_frame, bg='#f5f5f5', highlightthickness=0)
-        scrollbar = tk.Scrollbar(self.dashboard_frame, orient='vertical', command=canvas.yview)
+        # Scrollable area
+        canvas = tk.Canvas(popup, bg='#f5f5f5', highlightthickness=0)
+        scrollbar = tk.Scrollbar(popup, orient='vertical', command=canvas.yview)
         scrollable = tk.Frame(canvas, bg='#f5f5f5')
         
         scrollable.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.create_window((0, 0), window=scrollable, anchor='nw', width=canvas.winfo_width())
+        canvas.create_window((0, 0), window=scrollable, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
         
+        # Make canvas expand with window resize
         def configure_width(e):
             canvas.itemconfig(1, width=e.width)
         canvas.bind('<Configure>', configure_width)
         
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Ensure scroll region updates on window resize
+        def on_window_resize(e):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        popup.bind('<Configure>', on_window_resize)
         
         def wheel(e): canvas.yview_scroll(int(-1*(e.delta/120)), 'units')
         scrollable.bind('<Enter>', lambda e: canvas.bind_all('<MouseWheel>', wheel))
@@ -1858,21 +2028,18 @@ class PharmacyApp:
         canvas.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
         
-        # ========== MAIN CONTENT (FULL WIDTH) ==========
         main = tk.Frame(scrollable, bg='#f5f5f5', padx=25, pady=25)
         main.pack(fill='both', expand=True)
         
         # ========== KPI CARDS ROW 1 ==========
         kpi_frame = tk.Frame(main, bg='#f5f5f5')
         kpi_frame.pack(fill='x', pady=5)
-        
         cards = [
             ("💰 TOTAL INVESTMENT", f"{total_cost:,.0f} Birr", "What you paid", '#e74c3c'),
             ("📈 POTENTIAL REVENUE", f"{total_revenue_potential:,.0f} Birr", "Customer value", '#2ecc71'),
             ("💵 POTENTIAL PROFIT", f"{potential_profit:,.0f} Birr", f"Margin: {profit_margin:.1f}%", '#3498db'),
             ("📊 TODAY'S SALES", f"{today_revenue:,.0f} Birr", f"{today_transactions} transactions", '#f39c12')
         ]
-        
         for title, value, sub, color in cards:
             card = tk.Frame(kpi_frame, bg='white', padx=15, pady=12, relief='ridge', bd=1)
             card.pack(side='left', expand=True, fill='both', padx=3)
@@ -1880,10 +2047,9 @@ class PharmacyApp:
             tk.Label(card, text=value, bg='white', fg=color, font=('Segoe UI', 14, 'bold')).pack()
             tk.Label(card, text=sub, bg='white', fg='#95a5a6', font=('Segoe UI', 8)).pack()
         
-        # ========== KPI CARDS ROW 2 ==========
+        # KPI ROW 2
         kpi2_frame = tk.Frame(main, bg='#f5f5f5')
         kpi2_frame.pack(fill='x', pady=5)
-        
         cards2 = [
             ("💊 TOTAL PRODUCTS", f"{total_products}", f"{int(total_units):,} units", '#2c3e50'),
             ("⚠️ LOW STOCK", f"{low_stock['count']}", f"{low_stock['units']} units", '#e67e22'),
@@ -1891,7 +2057,6 @@ class PharmacyApp:
             ("❌ EXPIRED", f"{expired['count']}", f"{expired['units']} units", '#c0392b'),
             ("✅ HEALTHY", f"{healthy['count']}", f"{healthy['units']} units", '#27ae60')
         ]
-        
         for title, value, sub, color in cards2:
             card = tk.Frame(kpi2_frame, bg='white', padx=15, pady=12, relief='ridge', bd=1)
             card.pack(side='left', expand=True, fill='both', padx=3)
@@ -1899,349 +2064,221 @@ class PharmacyApp:
             tk.Label(card, text=value, bg='white', fg=color, font=('Segoe UI', 14, 'bold')).pack()
             tk.Label(card, text=sub, bg='white', fg='#95a5a6', font=('Segoe UI', 8)).pack()
         
-        # ========== GRAPH 1-2: FINANCIAL HEALTH + INVENTORY STATUS ==========
-        graph_row1 = tk.Frame(main, bg='#f5f5f5')
-        graph_row1.pack(fill='x', pady=10)
-        
-        # Graph 1: Financial Pie (LEFT)
-        frame1 = tk.LabelFrame(graph_row1, text="💰 Financial Health - Where Your Money Is", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
-        frame1.pack(side='left', fill='both', expand=True, padx=3)
-        
-        fig1 = Figure(figsize=(6, 4), dpi=100)
+        # Graph 1: Financial Pie
+        frame1 = tk.LabelFrame(main, text="💰 Financial Health - Where Your Money Is", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame1.pack(fill='x', pady=10)
+        fig1 = Figure(figsize=(6,4), dpi=100)
         fig1.patch.set_facecolor('white')
         ax1 = fig1.add_subplot(111)
-        
         if total_cost > 0 or potential_profit > 0:
-            wedges, texts, autos = ax1.pie(
-                [total_cost, potential_profit], 
-                labels=[f'Cost: {total_cost:,.0f}', f'Profit: {potential_profit:,.0f}'], 
-                colors=['#e74c3c', '#2ecc71'],
-                autopct=lambda pct: f'{pct:.1f}%\n({pct*total_revenue_potential/100:,.0f})',
-                textprops={'fontsize': 9}
-            )
-            for text in texts:
-                text.set_fontsize(9)
-            for auto in autos:
-                auto.set_fontsize(8)
-                auto.set_color('white')
-                auto.set_fontweight('bold')
+            wedges, texts, autos = ax1.pie([total_cost, potential_profit], labels=[f'Cost: {total_cost:,.0f}', f'Profit: {potential_profit:,.0f}'], colors=['#e74c3c','#2ecc71'], autopct=lambda pct: f'{pct:.1f}%\n({pct*total_revenue_potential/100:,.0f})', textprops={'fontsize':9})
+            for text in texts: text.set_fontsize(9)
+            for auto in autos: auto.set_fontsize(8); auto.set_color('white'); auto.set_fontweight('bold')
         else:
-            ax1.text(0.5, 0.5, 'No financial data', ha='center', va='center')
-        
+            ax1.text(0.5,0.5,'No financial data', ha='center', va='center')
         ax1.set_title('Investment Breakdown\n(What you paid vs What you gain)', fontsize=10, fontweight='bold')
         canvas1 = FigureCanvasTkAgg(fig1, frame1)
         canvas1.draw()
         canvas1.get_tk_widget().pack(fill='both', expand=True)
         
-        # Graph 2: Inventory Status Pie (RIGHT)
-        frame2 = tk.LabelFrame(graph_row1, text="📦 Inventory Health - Stock Status", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
-        frame2.pack(side='right', fill='both', expand=True, padx=3)
-        
-        fig2 = Figure(figsize=(6, 4), dpi=100)
+        # Graph 2: Inventory Health Pie
+        frame2 = tk.LabelFrame(main, text="📦 Inventory Health - Stock Status", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame2.pack(fill='x', pady=10)
+        fig2 = Figure(figsize=(6,4), dpi=100)
         fig2.patch.set_facecolor('white')
         ax2 = fig2.add_subplot(111)
-        
-        if healthy['units'] + low_stock['units'] + expiring['units'] + expired['units'] > 0:
+        if healthy['units']+low_stock['units']+expiring['units']+expired['units'] > 0:
             data = [healthy['units'], low_stock['units'], expiring['units'], expired['units']]
-            labels = [
-                f'Healthy: {healthy["units"]}', 
-                f'Low Stock: {low_stock["units"]}', 
-                f'Expiring: {expiring["units"]}', 
-                f'Expired: {expired["units"]}'
-            ]
-            colors = ['#2ecc71', '#f39c12', '#e67e22', '#e74c3c']
-            
-            wedges, texts, autos = ax2.pie(
-                data, labels=labels, colors=colors,
-                autopct=lambda pct: f'{pct:.1f}%',
-                textprops={'fontsize': 9}
-            )
-            for text in texts:
-                text.set_fontsize(9)
-            for auto in autos:
-                auto.set_fontsize(8)
-                auto.set_color('white')
-                auto.set_fontweight('bold')
+            labels = [f'Healthy: {healthy["units"]}', f'Low Stock: {low_stock["units"]}', f'Expiring: {expiring["units"]}', f'Expired: {expired["units"]}']
+            colors = ['#2ecc71','#f39c12','#e67e22','#e74c3c']
+            wedges, texts, autos = ax2.pie(data, labels=labels, colors=colors, autopct=lambda pct: f'{pct:.1f}%', textprops={'fontsize':9})
+            for text in texts: text.set_fontsize(9)
+            for auto in autos: auto.set_fontsize(8); auto.set_color('white'); auto.set_fontweight('bold')
         else:
-            ax2.text(0.5, 0.5, 'No inventory data', ha='center', va='center')
-        
+            ax2.text(0.5,0.5,'No inventory data', ha='center', va='center')
         ax2.set_title('Units by Status\n(Good ⚡ Low ⏰ Expiring ❌ Expired)', fontsize=10, fontweight='bold')
         canvas2 = FigureCanvasTkAgg(fig2, frame2)
         canvas2.draw()
         canvas2.get_tk_widget().pack(fill='both', expand=True)
         
-        # ========== GRAPH 3: EXPIRY WARNING BAR CHART (FULL WIDTH) ==========
-        frame3 = tk.LabelFrame(main, text="⏰ Expiry Calendar - Units Expiring Each Month", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        # Graph 3: Expiry Calendar
+        frame3 = tk.LabelFrame(main, text="⏰ Expiry Calendar - Units Expiring Each Month", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
         frame3.pack(fill='x', pady=10)
-        
-        fig3 = Figure(figsize=(12, 4), dpi=100)
+        fig3 = Figure(figsize=(12,4), dpi=100)
         fig3.patch.set_facecolor('white')
         ax3 = fig3.add_subplot(111)
-        
         month_list = list(monthly_expiry.keys())
         values = list(monthly_expiry.values())
-        value_labels = [f'{v:,}' for v in values]
-        
         if sum(values) > 0:
-            colors = ['#e74c3c' if i == datetime.now().month-1 else '#f39c12' if val > 0 else '#bdc3c7' 
-                    for i, val in enumerate(values)]
-            
+            colors = ['#e74c3c' if i == datetime.now().month-1 else '#f39c12' if val>0 else '#bdc3c7' for i,val in enumerate(values)]
             bars = ax3.bar(month_list, values, color=colors, width=0.8)
             ax3.set_title('UNITS EXPIRING EACH MONTH - PLAN YOUR SALES!', fontsize=12, fontweight='bold')
-            ax3.set_ylabel('Number of Units', fontsize=10)
-            ax3.set_xlabel('Month', fontsize=10)
+            ax3.set_ylabel('Number of Units')
             ax3.grid(axis='y', alpha=0.3)
-            
-            # Add value labels on top of bars
-            for bar, val, label in zip(bars, values, value_labels):
+            for bar, val in zip(bars, values):
                 if val > 0:
-                    ax3.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(values)*0.01,
-                            label, ha='center', va='bottom', fontsize=9, fontweight='bold')
-            
-            # Highlight current month
-            current_month = datetime.now().strftime('%b')
-            ax3.text(0.02, 0.95, f'🔴 Current Month: {current_month} - ACT NOW!', 
-                    transform=ax3.transAxes, fontsize=10, color='#e74c3c', fontweight='bold')
+                    ax3.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(values)*0.01, f'{val:,}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+            ax3.text(0.02, 0.95, f'🔴 Current Month: {datetime.now().strftime("%b")} - ACT NOW!', transform=ax3.transAxes, fontsize=10, color='#e74c3c', fontweight='bold')
         else:
-            ax3.text(0.5, 0.5, 'No expiry data available', ha='center', va='center')
-        
-        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=0)
+            ax3.text(0.5,0.5,'No expiry data', ha='center', va='center')
         fig3.tight_layout()
-        
         canvas3 = FigureCanvasTkAgg(fig3, frame3)
         canvas3.draw()
         canvas3.get_tk_widget().pack(fill='both', expand=True)
         
-        # ========== GRAPH 4-5: TOP SELLERS + CATEGORIES ==========
-        graph_row2 = tk.Frame(main, bg='#f5f5f5')
-        graph_row2.pack(fill='x', pady=10)
-        
-        # Graph 4: Top Sellers (LEFT)
-        frame4 = tk.LabelFrame(graph_row2, text="🏆 Top 5 Best Selling Products", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
-        frame4.pack(side='left', fill='both', expand=True, padx=3)
-        
-        fig4 = Figure(figsize=(6, 4), dpi=100)
+        # Graph 4: Top Sellers
+        frame4 = tk.LabelFrame(main, text="🏆 Top 5 Best Selling Products", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame4.pack(fill='x', pady=10)
+        fig4 = Figure(figsize=(6,4), dpi=100)
         fig4.patch.set_facecolor('white')
         ax4 = fig4.add_subplot(111)
-        
         if top_sellers:
-            products = [p[0][:20] + '..' if len(p[0]) > 20 else p[0] for p in top_sellers]
+            products = [p[0][:20]+'..' if len(p[0])>20 else p[0] for p in top_sellers]
             quantities = [p[1] for p in top_sellers]
-            revenues = [p[2] for p in top_sellers]
-            
             bars = ax4.barh(products, quantities, color='#3498db')
-            ax4.set_xlabel('Quantity Sold', fontsize=9)
-            ax4.set_title('Most Popular Medicines', fontsize=10, fontweight='bold')
-            
-            for i, (bar, qty, rev) in enumerate(zip(bars, quantities, revenues)):
-                ax4.text(qty + max(quantities)*0.01, bar.get_y() + bar.get_height()/2,
-                        f'{qty} units\n({rev:,.0f} Birr)', va='center', fontsize=8)
+            ax4.set_xlabel('Quantity Sold')
+            for bar, qty in zip(bars, quantities):
+                ax4.text(qty + max(quantities)*0.01, bar.get_y() + bar.get_height()/2, f'{qty} units', va='center', fontsize=8)
         else:
-            ax4.text(0.5, 0.5, 'No sales data yet', ha='center', va='center')
-        
+            ax4.text(0.5,0.5,'No sales data', ha='center', va='center')
         fig4.tight_layout()
         canvas4 = FigureCanvasTkAgg(fig4, frame4)
         canvas4.draw()
         canvas4.get_tk_widget().pack(fill='both', expand=True)
         
-        # Graph 5: Categories (RIGHT)
-        frame5 = tk.LabelFrame(graph_row2, text="📊 Products by Category", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
-        frame5.pack(side='right', fill='both', expand=True, padx=3)
-        
-        fig5 = Figure(figsize=(6, 4), dpi=100)
+        # Graph 5: Categories
+        frame5 = tk.LabelFrame(main, text="📊 Products by Category", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame5.pack(fill='x', pady=10)
+        fig5 = Figure(figsize=(6,4), dpi=100)
         fig5.patch.set_facecolor('white')
         ax5 = fig5.add_subplot(111)
-        
         if categories:
-            cat_names = [c[0][:15] + '..' if len(c[0]) > 15 else c[0] for c in categories[:5]]
-            cat_counts = [c[1] for c in categories[:5]]
-            cat_units = [c[2] for c in categories[:5]]
-            
-            colors = plt.cm.Set3(np.linspace(0, 1, len(cat_names)))
+            cat_names = [c[0][:15]+'..' if len(c[0])>15 else c[0] for c in categories]
+            cat_counts = [c[1] for c in categories]
+            colors = plt.cm.Set3(np.linspace(0,1,len(cat_names)))
             bars = ax5.bar(cat_names, cat_counts, color=colors)
-            ax5.set_title('Inventory Distribution by Category', fontsize=10, fontweight='bold')
-            ax5.set_ylabel('Number of Products', fontsize=9)
-            
-            for bar, count, units in zip(bars, cat_counts, cat_units):
-                height = bar.get_height()
-                ax5.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                        f'{count} products\n({units} units)', ha='center', va='bottom', fontsize=8)
+            ax5.set_title('Inventory Distribution by Category')
+            ax5.set_ylabel('Number of Products')
+            for bar, count in zip(bars, cat_counts):
+                ax5.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(cat_counts)*0.01, f'{count}', ha='center', va='bottom', fontsize=8)
+            plt.setp(ax5.xaxis.get_majorticklabels(), rotation=15)
         else:
-            ax5.text(0.5, 0.5, 'No category data', ha='center', va='center')
-        
-        plt.setp(ax5.xaxis.get_majorticklabels(), rotation=15)
+            ax5.text(0.5,0.5,'No category data', ha='center', va='center')
         fig5.tight_layout()
         canvas5 = FigureCanvasTkAgg(fig5, frame5)
         canvas5.draw()
         canvas5.get_tk_widget().pack(fill='both', expand=True)
         
-        # ========== GRAPH 6-7: SALES TREND + WEEKDAY PATTERN ==========
-        graph_row3 = tk.Frame(main, bg='#f5f5f5')
-        graph_row3.pack(fill='x', pady=10)
-        
-        # Graph 6: Monthly Sales Trend (LEFT)
-        frame6 = tk.LabelFrame(graph_row3, text="📈 Sales Performance - Last 12 Months", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
-        frame6.pack(side='left', fill='both', expand=True, padx=3)
-        
-        fig6 = Figure(figsize=(7, 4), dpi=100)
+        # Graph 6: Monthly Sales Trend
+        frame6 = tk.LabelFrame(main, text="📈 Sales Performance - Last 12 Months", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame6.pack(fill='x', pady=10)
+        fig6 = Figure(figsize=(7,4), dpi=100)
         fig6.patch.set_facecolor('white')
         ax6 = fig6.add_subplot(111)
-        
         months_list = list(monthly_sales.keys())
-        sales_values = list(monthly_sales.values())
-        
-        if sum(sales_values) > 0:
-            ax6.plot(months_list, sales_values, marker='o', linewidth=2, markersize=8, color='#e67e22')
-            ax6.fill_between(months_list, sales_values, alpha=0.3, color='#f39c12')
-            ax6.set_title('Monthly Revenue Trend', fontsize=10, fontweight='bold')
-            ax6.set_ylabel('Sales (Birr)', fontsize=9)
+        sales_vals = list(monthly_sales.values())
+        if sum(sales_vals) > 0:
+            ax6.plot(months_list, sales_vals, marker='o', linewidth=2, markersize=8, color='#e67e22')
+            ax6.fill_between(months_list, sales_vals, alpha=0.3, color='#f39c12')
+            ax6.set_title('Monthly Revenue Trend')
+            ax6.set_ylabel('Sales (Birr)')
             ax6.grid(True, alpha=0.3)
-            
-            for i, (month, val) in enumerate(zip(months_list, sales_values)):
-                if val > 0:
-                    ax6.annotate(f'{val:,.0f}', (month, val), textcoords="offset points", 
-                            xytext=(0,10), ha='center', fontsize=8, fontweight='bold')
-            
-            # Add trend indicator
-            if len(sales_values) >= 2:
-                trend = sales_values[-1] - sales_values[0]
-                trend_text = f'📊 12-Month Trend: {"▲ +" if trend > 0 else "▼ "}{abs(trend):,.0f} Birr'
-                trend_color = '#2ecc71' if trend > 0 else '#e74c3c'
-                ax6.text(0.02, 0.95, trend_text, transform=ax6.transAxes, 
-                        fontsize=9, color=trend_color, fontweight='bold')
+            for i, (m, v) in enumerate(zip(months_list, sales_vals)):
+                if v>0: ax6.annotate(f'{v:,.0f}', (m, v), textcoords="offset points", xytext=(0,10), ha='center', fontsize=8, fontweight='bold')
+            if len(sales_vals)>=2:
+                trend = sales_vals[-1] - sales_vals[0]
+                trend_color = '#2ecc71' if trend>0 else '#e74c3c'
+                ax6.text(0.02,0.95, f'12-Month Trend: {"▲ +" if trend>0 else "▼ "}{abs(trend):,.0f} Birr', transform=ax6.transAxes, fontsize=9, color=trend_color, fontweight='bold')
+            plt.setp(ax6.xaxis.get_majorticklabels(), rotation=45)
         else:
-            ax6.text(0.5, 0.5, 'No sales data', ha='center', va='center')
-        
-        plt.setp(ax6.xaxis.get_majorticklabels(), rotation=45)
+            ax6.text(0.5,0.5,'No sales data', ha='center', va='center')
         fig6.tight_layout()
         canvas6 = FigureCanvasTkAgg(fig6, frame6)
         canvas6.draw()
         canvas6.get_tk_widget().pack(fill='both', expand=True)
         
-        # Graph 7: Weekday Sales Pattern (RIGHT)
-        frame7 = tk.LabelFrame(graph_row3, text="📅 Best Selling Days", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
-        frame7.pack(side='right', fill='both', expand=True, padx=3)
-        
-        fig7 = Figure(figsize=(5, 4), dpi=100)
+        # Graph 7: Weekday Pattern
+        frame7 = tk.LabelFrame(main, text="📅 Best Selling Days", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        frame7.pack(fill='x', pady=10)
+        fig7 = Figure(figsize=(5,4), dpi=100)
         fig7.patch.set_facecolor('white')
         ax7 = fig7.add_subplot(111)
-        
         days = list(weekdays.keys())
-        day_values = list(weekdays.values())
-        
-        if sum(day_values) > 0:
-            colors = ['#3498db' if i < 5 else '#e67e22' for i in range(7)]
-            bars = ax7.bar(days, day_values, color=colors)
-            ax7.set_title('Sales by Day of Week', fontsize=10, fontweight='bold')
-            ax7.set_ylabel('Sales (Birr)', fontsize=9)
-            
-            for bar, val in zip(bars, day_values):
-                if val > 0:
-                    ax7.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(day_values)*0.01,
-                            f'{val:,.0f}', ha='center', va='bottom', fontsize=8, fontweight='bold')
-            
-            # Find best day
-            best_day = days[day_values.index(max(day_values))]
-            ax7.text(0.05, 0.95, f'⭐ Best Day: {best_day}', transform=ax7.transAxes, 
-                    fontsize=9, color='#f39c12', fontweight='bold')
+        day_vals = list(weekdays.values())
+        if sum(day_vals) > 0:
+            colors = ['#3498db' if i<5 else '#e67e22' for i in range(7)]
+            bars = ax7.bar(days, day_vals, color=colors)
+            ax7.set_title('Sales by Day of Week')
+            ax7.set_ylabel('Sales (Birr)')
+            for bar, val in zip(bars, day_vals):
+                if val>0: ax7.text(bar.get_x()+bar.get_width()/2., bar.get_height()+max(day_vals)*0.01, f'{val:,.0f}', ha='center', va='bottom', fontsize=8)
+            best_day = days[day_vals.index(max(day_vals))]
+            ax7.text(0.05,0.95, f'⭐ Best Day: {best_day}', transform=ax7.transAxes, fontsize=9, color='#f39c12', fontweight='bold')
         else:
-            ax7.text(0.5, 0.5, 'No sales data', ha='center', va='center')
-        
+            ax7.text(0.5,0.5,'No sales data', ha='center', va='center')
         fig7.tight_layout()
         canvas7 = FigureCanvasTkAgg(fig7, frame7)
         canvas7.draw()
         canvas7.get_tk_widget().pack(fill='both', expand=True)
         
-        # ========== GRAPH 8: PRICE RANGE DISTRIBUTION ==========
-        frame8 = tk.LabelFrame(main, text="💰 Price Range Distribution - Where Your Stock Value Is", 
-                            bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
+        # Graph 8: Price Range
+        frame8 = tk.LabelFrame(main, text="💰 Price Range Distribution - Where Your Stock Value Is", bg='white', padx=20, pady=15, font=('Segoe UI', 11, 'bold'))
         frame8.pack(fill='x', pady=10)
-        
-        fig8 = Figure(figsize=(12, 3.5), dpi=100)
+        fig8 = Figure(figsize=(12,3.5), dpi=100)
         fig8.patch.set_facecolor('white')
         ax8 = fig8.add_subplot(111)
-        
         ranges = list(price_ranges.keys())
-        range_values = list(price_ranges.values())
-        
-        if sum(range_values) > 0:
-            colors = plt.cm.viridis(np.linspace(0, 1, len(ranges)))
-            bars = ax8.bar(ranges, range_values, color=colors, width=0.7)
-            ax8.set_title('Stock Distribution by Price Range', fontsize=11, fontweight='bold')
-            ax8.set_ylabel('Number of Units', fontsize=9)
-            ax8.set_xlabel('Price Range (Birr)', fontsize=9)
-            
-            for bar, val in zip(bars, range_values):
-                if val > 0:
-                    ax8.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(range_values)*0.01,
-                            f'{val:,} units', ha='center', va='bottom', fontsize=9, fontweight='bold')
+        range_vals = list(price_ranges.values())
+        if sum(range_vals)>0:
+            colors = plt.cm.viridis(np.linspace(0,1,len(ranges)))
+            bars = ax8.bar(ranges, range_vals, color=colors, width=0.7)
+            ax8.set_title('Stock Distribution by Price Range')
+            ax8.set_ylabel('Number of Units')
+            ax8.set_xlabel('Price Range (Birr)')
+            for bar, val in zip(bars, range_vals):
+                if val>0: ax8.text(bar.get_x()+bar.get_width()/2., bar.get_height()+max(range_vals)*0.01, f'{val:,} units', ha='center', va='bottom', fontsize=9)
         else:
-            ax8.text(0.5, 0.5, 'No price data', ha='center', va='center')
-        
+            ax8.text(0.5,0.5,'No price data', ha='center', va='center')
         fig8.tight_layout()
         canvas8 = FigureCanvasTkAgg(fig8, frame8)
         canvas8.draw()
         canvas8.get_tk_widget().pack(fill='both', expand=True)
         
-        # ========== LOSS WARNING SECTION ==========
+        # Warning and actions
         if expired['units'] > 0 or expiring['units'] > 0:
             warn_frame = tk.Frame(main, bg='#fdeded', padx=20, pady=15)
             warn_frame.pack(fill='x', pady=10)
-            
-            tk.Label(warn_frame, text="⚠️ CRITICAL WARNING - FINANCIAL LOSS DETECTED", 
-                    bg='#fdeded', fg='#c0392b', font=('Segoe UI', 13, 'bold')).pack()
-            
+            tk.Label(warn_frame, text="⚠️ CRITICAL WARNING - FINANCIAL LOSS DETECTED", bg='#fdeded', fg='#c0392b', font=('Segoe UI',13,'bold')).pack()
             if expired['units'] > 0:
-                loss_text = f"❌ You have already LOST {expired['value']:,.0f} Birr from {expired['units']} expired units!"
-                tk.Label(warn_frame, text=loss_text, bg='#fdeded', fg='#c0392b',
-                        font=('Segoe UI', 11)).pack()
-            
+                tk.Label(warn_frame, text=f"❌ You have already LOST {expired['value']:,.0f} Birr from {expired['units']} expired units!", bg='#fdeded', fg='#c0392b', font=('Segoe UI',11)).pack()
             if expiring['units'] > 0:
-                risk_text = f"⏰ {expiring['units']} units worth {expiring['value']:,.0f} Birr will expire in 30 days - SELL NOW!"
-                tk.Label(warn_frame, text=risk_text, bg='#fdeded', fg='#e67e22',
-                        font=('Segoe UI', 11, 'bold')).pack()
+                tk.Label(warn_frame, text=f"⏰ {expiring['units']} units worth {expiring['value']:,.0f} Birr will expire in 30 days - SELL NOW!", bg='#fdeded', fg='#e67e22', font=('Segoe UI',11,'bold')).pack()
         
-        # ========== ACTION ITEMS ==========
         action_frame = tk.Frame(main, bg='#e8f4f8', padx=20, pady=12)
         action_frame.pack(fill='x', pady=10)
-        
-        tk.Label(action_frame, text="🎯 YOUR NEXT ACTIONS:", bg='#e8f4f8', fg='#2980b9',
-                font=('Segoe UI', 12, 'bold')).pack(anchor='w')
-        
+        tk.Label(action_frame, text="🎯 YOUR NEXT ACTIONS:", bg='#e8f4f8', fg='#2980b9', font=('Segoe UI',12,'bold')).pack(anchor='w')
         actions = []
-        if low_stock['units'] > 0:
-            actions.append(f"📦 Reorder {low_stock['count']} low stock items ({low_stock['units']} units)")
-        if expiring['units'] > 0:
-            actions.append(f"🏷️ RUN SALE on {expiring['count']} products expiring soon")
-        if expired['units'] > 0:
-            actions.append(f"🗑️ Remove {expired['count']} expired products immediately")
-        if len(top_sellers) > 0:
-            actions.append(f"⭐ Stock more of your top sellers")
-        
+        if low_stock['units']>0: actions.append(f"📦 Reorder {low_stock['count']} low stock items ({low_stock['units']} units)")
+        if expiring['units']>0: actions.append(f"🏷️ RUN SALE on {expiring['count']} products expiring soon")
+        if expired['units']>0: actions.append(f"🗑️ Remove {expired['count']} expired products immediately")
+        if top_sellers: actions.append(f"⭐ Stock more of your top sellers")
         if actions:
-            for action in actions:
-                tk.Label(action_frame, text=action, bg='#e8f4f8', fg='#2c3e50',
-                        font=('Segoe UI', 10), anchor='w').pack(anchor='w', pady=2)
+            for act in actions: tk.Label(action_frame, text=act, bg='#e8f4f8', fg='#2c3e50', font=('Segoe UI',10), anchor='w').pack(anchor='w',pady=2)
         else:
-            tk.Label(action_frame, text="✅ All systems optimal! Keep up the good work!",
-                    bg='#e8f4f8', fg='#27ae60', font=('Segoe UI', 11, 'bold')).pack()
+            tk.Label(action_frame, text="✅ All systems optimal! Keep up the good work!", bg='#e8f4f8', fg='#27ae60', font=('Segoe UI',11,'bold')).pack()
         
-        # ========== FOOTER ==========
         footer = tk.Frame(main, bg='#f5f5f5')
-        footer.pack(fill='x', pady=(15, 5))
+        footer.pack(fill='x', pady=(15,5))
+        tk.Label(footer, text="MERawi Pharmacy Pro - Live Dashboard", bg='#f5f5f5', fg='#7f8c8d').pack()
+        tk.Label(footer, text="Merawi Yohannes · 0921-540-245 · merawiyohannes@gmail.com", bg='#f5f5f5', fg='#7f8c8d').pack()
         
-        tk.Label(footer, text="MERawi Pharmacy Pro - Business Intelligence Dashboard", 
-                bg='#f5f5f5', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
-        tk.Label(footer, text="Merawi Yohannes · 0921-540-245 · merawiyohannes@gmail.com", 
-                bg='#f5f5f5', fg='#7f8c8d', font=('Segoe UI', 9)).pack()
-    
+        close_btn = tk.Button(main, text="Close Dashboard", bg='#34495e', fg='white', font=('Segoe UI',10,'bold'), padx=20, pady=5, command=popup.destroy)
+        close_btn.pack(pady=10)
+        
+        # Force initial scroll region update
+        popup.update_idletasks()
+        canvas.configure(scrollregion=canvas.bbox('all'))
+            
     def create_bin_card_tab(self):
         self.bin_card_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.bin_card_frame, text="📦 Bin Card")
@@ -2346,46 +2383,6 @@ class PharmacyApp:
     
     # ========== MEDICINES TAB ==========
     
-    def check_owner_password(self, feature_name="this feature"):
-        """Ask for owner password before allowing sensitive features."""
-        dialog = tk.Toplevel(self.root)
-        dialog.title("🔐 Owner Verification")
-        dialog.geometry("300x150")
-        dialog.transient(self.root)
-        dialog.grab_set()
-        dialog.resizable(False, False)
-        
-        # Center the dialog
-        dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - (150)
-        y = (dialog.winfo_screenheight() // 2) - (75)
-        dialog.geometry(f'+{x}+{y}')
-        
-        tk.Label(dialog, text=f"Enter password to access {feature_name}:",
-                font=('Segoe UI', 10)).pack(pady=10)
-        
-        entry = tk.Entry(dialog, show="*", font=('Segoe UI', 11), width=20)
-        entry.pack(pady=5)
-        entry.focus_set()
-        
-        result = tk.BooleanVar(value=False)
-        
-        def verify():
-            # Change this password to your own (owner sets it)
-            if entry.get() == "merawi2024":   # ← CHANGE THIS PASSWORD!
-                result.set(True)
-                dialog.destroy()
-            else:
-                messagebox.showerror("Access Denied", "Incorrect password.\nAccess denied.")
-                entry.delete(0, tk.END)
-        
-        tk.Button(dialog, text="OK", bg='#2c3e50', fg='white',
-                font=('Segoe UI', 10), command=verify).pack(pady=5)
-        dialog.bind('<Return>', lambda e: verify())
-        
-        self.root.wait_window(dialog)
-        return result.get()
-    
     def on_tab_changed(self, event):
         if getattr(self, '_switching_tab', False):
             return
@@ -2407,11 +2404,6 @@ class PharmacyApp:
         else:
             self._last_tab = current
         
-    def test_database_with_password(self):
-        """Wrapper to check password before running test database."""
-        if self.check_owner_password("Database Analytics"):
-            self.test_database_contents()
-    
     def create_medicines_tab(self):
         """Create medicines management tab"""
         self.medicines_frame = ttk.Frame(self.notebook)
@@ -2430,9 +2422,6 @@ class PharmacyApp:
                  font=('Segoe UI', 10), padx=10, command=self.delete_medicine).pack(side='left', padx=5, pady=10)
         tk.Button(toolbar, text="🔄 Refresh", bg='#f39c12', fg='white',
                  font=('Segoe UI', 10), padx=10, command=self.load_medicines).pack(side='left', padx=5, pady=10)
-        tk.Button(toolbar, text="🔍 Test DB", bg='#9b59b6', fg='white',
-                 font=('Segoe UI', 10), padx=10, command=self.test_database_with_password).pack(side='left', padx=5, pady=10)
-        
         # Search
         search_frame = tk.Frame(self.medicines_frame, bg='white', relief='groove', bd=2)
         search_frame.pack(fill='x', padx=5, pady=5)
@@ -4480,6 +4469,7 @@ def main():
         
         # Show the main window
         root.deiconify()
+        app.enable_admin_menu()
         root.mainloop()
         
     except Exception as e:
