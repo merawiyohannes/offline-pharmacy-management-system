@@ -1817,6 +1817,7 @@ class PharmacyApp:
         reports_menu.add_command(label="⚠️ Low Stock Report", command=self.low_stock_report)
         reports_menu.add_command(label="⏰ Expiring Medicines", command=self.expiring_report)
         reports_menu.add_command(label="💰 Today's Sales", command=self.today_sales_report)
+        reports_menu.add_separator()
         reports_menu.add_command(label="📊 Invoice Analysis", command=self.show_invoice_analysis)
         
         # ---------- Settings menu ----------
